@@ -34,11 +34,11 @@ class MainActivity : Activity() {
 
     companion object {
         var onSmsReceivedUIUpdate: (() -> Unit)? = null
-        var onTestSmsReceived: ((type: String, amount: Long, bankName: String, dateStr: String) -> Unit)? = null
 
         const val PREFS_NAME = "PoolayeManPrefs"
         const val KEY_TRANSACTIONS = "transactions"
-        const val KEY_BANK_BALANCES = "bank_balances_map"
+        const val KEY_BALANCE = "last_balance"
+        const val KEY_BALANCE_DATE = "last_balance_date"
         const val KEY_ENTERTAINMENT_CAP = "entertainment_budget_cap"
         const val KEY_DEBTS = "student_debts"
         const val KEY_GOALS = "saving_goals"
@@ -85,7 +85,7 @@ class MainActivity : Activity() {
     private lateinit var pageContentContainer: LinearLayout
     private lateinit var bottomNavBar: LinearLayout
 
-    // 0 = سبک زندگی | 1 = سقف بودجه | 2 = دنگ‌ها | 3 = قلک | 4 = تست
+    // 0 = سبک زندگی | 1 = سقف بودجه | 2 = دنگ‌ها | 3 = قلک
     private var currentTabIndex = 0
     private var showExpenseInBarChart = true
     private var isDialogShowing = false
@@ -190,7 +190,7 @@ class MainActivity : Activity() {
 
         initDefaultsIfNeeded()
         requestNeededPermissions()
-        syncAllBanksFromSmsInbox(showToast = false)
+        syncLatestBalanceFromSmsInbox(showToast = false)
     }
 
     override fun onResume() {
@@ -201,12 +201,7 @@ class MainActivity : Activity() {
                 checkAndAskPendingTransactions()
             }
         }
-        onTestSmsReceived = { type, amount, bankName, dateStr ->
-            runOnUiThread {
-                showTestTransactionDialog(type, amount, bankName, dateStr)
-            }
-        }
-        syncAllBanksFromSmsInbox(showToast = false)
+        syncLatestBalanceFromSmsInbox(showToast = false)
         refreshUI()
         checkAndAskPendingTransactions()
     }
@@ -214,7 +209,6 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         onSmsReceivedUIUpdate = null
-        onTestSmsReceived = null
     }
 
     override fun onRequestPermissionsResult(
@@ -224,7 +218,7 @@ class MainActivity : Activity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 101) {
-            syncAllBanksFromSmsInbox(showToast = true)
+            syncLatestBalanceFromSmsInbox(showToast = true)
             refreshUI()
         }
     }
@@ -276,7 +270,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun syncAllBanksFromSmsInbox(showToast: Boolean) {
+    private fun syncLatestBalanceFromSmsInbox(showToast: Boolean) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
             checkSelfPermission(Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -287,47 +281,53 @@ class MainActivity : Activity() {
             val inboxUri = Uri.parse("content://sms/inbox")
             val cursor = contentResolver.query(
                 inboxUri,
-                arrayOf("_id", "address", "body", "date"),
+                arrayOf("_id", "body", "date"),
                 null,
                 null,
                 "date DESC"
             )
 
-            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val banksJson = JSONObject(prefs.getString(KEY_BANK_BALANCES, "{}"))
-            val updatedBanksInThisScan = mutableSetOf<String>()
-
             cursor?.use { c ->
                 val bodyIndex = c.getColumnIndex("body")
-                val addressIndex = c.getColumnIndex("address")
                 var checkedCount = 0
 
-                while (c.moveToNext() && checkedCount < 600) {
+                while (c.moveToNext() && checkedCount < 400) {
                     checkedCount++
                     if (bodyIndex < 0) continue
                     val rawBody = c.getString(bodyIndex) ?: continue
-                    val sender = if (addressIndex >= 0) (c.getString(addressIndex) ?: "") else ""
+                    val normalized = SmsParser.normalizeDigits(rawBody)
 
-                    val parsed = SmsParser.parseBankSmsDetails(rawBody, sender) ?: continue
-                    if (parsed.balance != null && !updatedBanksInThisScan.contains(parsed.bankKey)) {
-                        updatedBanksInThisScan.add(parsed.bankKey)
-                        banksJson.put(parsed.bankKey, JSONObject().apply {
-                            put("bankName", parsed.bankKey)
-                            put("balance", parsed.balance)
-                            put("date", parsed.dateStr)
-                        })
+                    val hasBankKeywords = normalized.contains("واریز") ||
+                            normalized.contains("برداشت") ||
+                            normalized.contains("حساب")
+                    val balanceMatch = Regex("""مانده\s*:?\s*([\d,]+)""").find(normalized)
+
+                    if (hasBankKeywords && balanceMatch != null) {
+                        val extractedBalance = balanceMatch.groupValues[1]
+                            .replace(",", "")
+                            .toLongOrNull()
+
+                        if (extractedBalance != null) {
+                            val dateMatch = Regex("""(\d{2}/\d{2}/\d{2}-\d{2}:\d{2})""").find(normalized)
+                            val dateStr = dateMatch?.groupValues?.get(1) ?: "آخرین پیامک بانک"
+
+                            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                            prefs.edit()
+                                .putLong(KEY_BALANCE, extractedBalance)
+                                .putString(KEY_BALANCE_DATE, dateStr)
+                                .apply()
+
+                            if (showToast) {
+                                Toast.makeText(
+                                    this,
+                                    "✅ موجودی از آخرین پیامک بانک خوانده شد: ${formatNumber(extractedBalance)}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                            break
+                        }
                     }
                 }
-            }
-
-            prefs.edit().putString(KEY_BANK_BALANCES, banksJson.toString()).apply()
-
-            if (showToast && updatedBanksInThisScan.isNotEmpty()) {
-                Toast.makeText(
-                    this,
-                    "✅ موجودی ${updatedBanksInThisScan.size} حساب بانکی از پیامک‌ها بروزرسانی شد",
-                    Toast.LENGTH_LONG
-                ).show()
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -345,9 +345,8 @@ class MainActivity : Activity() {
                 val txId = obj.getLong("id")
                 val amount = obj.getLong("amount")
                 val dateStr = obj.optString("date", "امروز")
-                val bankName = obj.optString("bank", "بانک")
                 val type = obj.optString("type", "WITHDRAW")
-                showAskRealTransactionDialog(txId, amount, bankName, dateStr, type)
+                showAskRealTransactionDialog(txId, amount, dateStr, type)
                 break
             }
         }
@@ -356,7 +355,6 @@ class MainActivity : Activity() {
     private fun showAskRealTransactionDialog(
         txId: Long,
         amount: Long,
-        bankName: String,
         dateStr: String,
         type: String
     ) {
@@ -373,7 +371,7 @@ class MainActivity : Activity() {
         scrollWrapper.addView(dialogLayout)
 
         dialogLayout.addView(TextView(this).apply {
-            text = if (isWithdraw) "✨ ثبت مخارج جدید ($bankName)" else "💰 ثبت درآمد جدید ($bankName)"
+            text = if (isWithdraw) "✨ ثبت مخارج جدید" else "💰 ثبت درآمد جدید"
             textSize = 17f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor(if (isWithdraw) "#38BDF8" else "#34D399"))
@@ -630,9 +628,8 @@ class MainActivity : Activity() {
             put("id", System.currentTimeMillis())
             put("type", type)
             put("amount", amount)
-            put("bank", "ثبت دستی")
             put("date", "ثبت دستی")
-            put("balance", -1L)
+            put("balance", prefs.getLong(KEY_BALANCE, -1L))
             put("title", title)
             put("category", category)
             put("tag", tag)
@@ -640,75 +637,6 @@ class MainActivity : Activity() {
         }
         arr.put(obj)
         prefs.edit().putString(KEY_TRANSACTIONS, arr.toString()).apply()
-    }
-
-    private fun showTestTransactionDialog(type: String, amount: Long, bankName: String, dateStr: String) {
-        val isWithdraw = (type == "WITHDRAW")
-
-        val dialogLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(22), dp(22), dp(18))
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-            background = createGlassBg("#F21E1B4B", "#99FBBF24", dp(22).toFloat(), 3)
-        }
-
-        dialogLayout.addView(TextView(this).apply {
-            text = if (isWithdraw) "🧪 تست پیامک برداشت ($bankName)" else "🧪 تست پیامک واریز ($bankName)"
-            textSize = 17f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#FBBF24"))
-        })
-
-        dialogLayout.addView(TextView(this).apply {
-            text = "⚠️ این فقط یک تست است و روی موجودی حساب بانکی شما تاثیر نمی‌گذارد."
-            textSize = 12.5f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#FDE047"))
-            setPadding(0, dp(6), 0, dp(6))
-        })
-
-        dialogLayout.addView(TextView(this).apply {
-            text = "مبلغ آزمایشی: ${formatNumber(amount)} ($dateStr)"
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, dp(12))
-        })
-
-        val dialog = AlertDialog.Builder(this)
-            .setView(dialogLayout)
-            .setCancelable(true)
-            .create()
-        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
-
-        val categoriesList = if (isWithdraw) EXPENSE_CATEGORIES else INCOME_CATEGORIES
-        val btnColors = if (isWithdraw) CHART_COLORS_EXPENSE else CHART_COLORS_INCOME
-
-        categoriesList.forEachIndexed { index, categoryName ->
-            val btn = Button(this).apply {
-                text = "$categoryName (تست)"
-                setTextColor(Color.WHITE)
-                textSize = 13.5f
-                setTypeface(null, Typeface.BOLD)
-                background = createGlassBg(
-                    addAlphaToHex(btnColors[index % btnColors.size], "44"),
-                    btnColors[index % btnColors.size],
-                    dp(12).toFloat(),
-                    2
-                )
-                layoutParams = createCardLayoutParams(bottomMarginDp = 8)
-                setOnClickListener {
-                    dialog.dismiss()
-                    Toast.makeText(
-                        this@MainActivity,
-                        "✅ تست انجام شد: بخش «$categoryName» (موجودی تغییر نکرد)",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-            dialogLayout.addView(btn)
-        }
-
-        dialog.show()
     }
 
     private fun updateTransactionDetails(
@@ -744,7 +672,6 @@ class MainActivity : Activity() {
             1 -> renderBudgetingAndCategoriesPage()
             2 -> renderSplitBillAndDebtsPage()
             3 -> renderGoalsAndTurnoverPage()
-            4 -> renderToolsAndTestPage()
         }
     }
 
@@ -793,15 +720,14 @@ class MainActivity : Activity() {
             "📊 سبک زندگی",
             "🎯 سقف بودجه",
             "🤝 دنگ‌ها",
-            "🐷 قلک",
-            "⚙️ تست"
+            "🐷 قلک"
         )
 
         navItems.forEachIndexed { index, label ->
             val isSelected = (index == currentTabIndex)
             val navBtn = TextView(this).apply {
                 text = label
-                textSize = 11.5f
+                textSize = 12f
                 gravity = Gravity.CENTER
                 setPadding(dp(4), dp(9), dp(4), dp(9))
                 setTypeface(null, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
@@ -825,19 +751,8 @@ class MainActivity : Activity() {
     private fun renderLifestyleAnalyticsPage() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val arr = JSONArray(prefs.getString(KEY_TRANSACTIONS, "[]"))
-        val banksJson = JSONObject(prefs.getString(KEY_BANK_BALANCES, "{}"))
-
-        var totalBankBalance = 0L
-        val bankLines = mutableListOf<String>()
-        val keys = banksJson.keys()
-        while (keys.hasNext()) {
-            val k = keys.next()
-            val bObj = banksJson.getJSONObject(k)
-            val bVal = bObj.optLong("balance", 0L)
-            val bDate = bObj.optString("date", "")
-            totalBankBalance += bVal
-            bankLines.add("• $k : ${formatNumber(bVal)} ($bDate)")
-        }
+        val lastBalance = prefs.getLong(KEY_BALANCE, 0L)
+        val lastBalanceDate = prefs.getString(KEY_BALANCE_DATE, "در انتظار خواندن پیامک...") ?: ""
 
         var totalDeposit = 0L
         var totalWithdraw = 0L
@@ -876,7 +791,7 @@ class MainActivity : Activity() {
             }
         }
 
-        // ۱. کارت موجودی حساب بانکی شما (پشتیبانی از چند بانک)
+        // ۱. کارت موجودی حساب بانکی شما
         val bankCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = createGlassBg("#26FFFFFF", "#6638BDF8", dp(22).toFloat(), 3)
@@ -892,48 +807,38 @@ class MainActivity : Activity() {
         })
 
         bankCard.addView(TextView(this).apply {
-            text = formatNumber(totalBankBalance)
+            text = formatNumber(lastBalance)
             textSize = 23f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            setPadding(0, dp(10), 0, dp(6))
+            setPadding(0, dp(10), 0, dp(4))
         })
 
-        if (bankLines.isNotEmpty()) {
-            bankCard.addView(TextView(this).apply {
-                text = bankLines.joinToString("\n")
-                textSize = 12f
-                setTextColor(Color.parseColor("#CBD5E1"))
-                setLineSpacing(6f, 1f)
-                setPadding(0, 0, 0, dp(12))
-            })
-        } else {
-            bankCard.addView(TextView(this).apply {
-                text = "در انتظار خواندن پیامک‌های بانکی..."
-                textSize = 12f
-                setTextColor(Color.parseColor("#94A3B8"))
-                gravity = Gravity.CENTER
-                setPadding(0, 0, 0, dp(12))
-            })
-        }
+        bankCard.addView(TextView(this).apply {
+            text = "زمان آخرین پیامک مانده: $lastBalanceDate"
+            textSize = 12f
+            setTextColor(Color.parseColor("#94A3B8"))
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(12))
+        })
 
         val refreshInboxBtn = Button(this).apply {
-            text = "🔄 بروزرسانی موجودی همه بانک‌ها از پیامک‌ها"
+            text = "🔄 بروزرسانی مجدد موجودی از پیامک‌های گوشی"
             textSize = 12.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
             background = createGlassBg("#3338BDF8", "#8038BDF8", dp(12).toFloat(), 2)
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
             setOnClickListener {
-                syncAllBanksFromSmsInbox(showToast = true)
+                syncLatestBalanceFromSmsInbox(showToast = true)
                 refreshUI()
             }
         }
         bankCard.addView(refreshInboxBtn)
         pageContentContainer.addView(bankCard)
 
-        // ۲. تحلیل سبک زندگی (فقط بعد از ثبت حداقل ۱۰ تراکنش نمایش داده شود)
+        // ۲. تحلیل سبک زندگی (فقط بعد از ثبت حداقل ۱۰ تراکنش)
         if (totalTxCount >= 10) {
             val ruleCard = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -1054,10 +959,10 @@ class MainActivity : Activity() {
         barChartCard.addView(barChartView)
         pageContentContainer.addView(barChartCard)
 
-        // ۴. نمودار دایره‌ای هزینه‌ها (بدون نوشته اضافی کنار آن)
+        // ۴. نمودار دایره‌ای با عنوان «هزینه‌ها»
         pageContentContainer.addView(
             buildGlassArchChartCard(
-                badgeTitleText = "نمودار دایره‌ای هزینه‌ها",
+                badgeTitleText = "هزینه‌ها",
                 borderHex = "#66FF5E8E",
                 categories = EXPENSE_CATEGORIES,
                 sumsMap = expenseSums,
@@ -1067,10 +972,10 @@ class MainActivity : Activity() {
             )
         )
 
-        // ۵. نمودار دایره‌ای درآمدها (بدون نوشته اضافی کنار آن)
+        // ۵. نمودار دایره‌ای با عنوان «درآمدها»
         pageContentContainer.addView(
             buildGlassArchChartCard(
-                badgeTitleText = "نمودار دایره‌ای درآمدها",
+                badgeTitleText = "درآمدها",
                 borderHex = "#6634D399",
                 categories = INCOME_CATEGORIES,
                 sumsMap = incomeSums,
@@ -1100,10 +1005,10 @@ class MainActivity : Activity() {
 
         val headerBadge = TextView(this).apply {
             text = badgeTitleText
-            textSize = 13f
+            textSize = 13.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
-            setPadding(dp(18), dp(7), dp(18), dp(7))
+            setPadding(dp(22), dp(7), dp(22), dp(7))
             background = createGlassBg("#4D38BDF8", "#9938BDF8", dp(12).toFloat(), 2)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1211,7 +1116,6 @@ class MainActivity : Activity() {
             }
         }
 
-        // ۱. کارت ویژه سقف بودجه فقط برای «تفریح و سرگرمی»
         val funSpent = categorySums[ENTERTAINMENT_CATEGORY] ?: 0L
         val usagePct = ((funSpent * 100f) / entertainmentCap).toInt()
 
@@ -1293,7 +1197,6 @@ class MainActivity : Activity() {
 
         pageContentContainer.addView(funBudgetCard)
 
-        // ۲. سایر دسته‌ها (فقط نمایش مخارج بدون سقف بودجه)
         EXPENSE_CATEGORIES.forEachIndexed { idx, cat ->
             if (cat == ENTERTAINMENT_CATEGORY) return@forEachIndexed
 
@@ -1735,10 +1638,10 @@ class MainActivity : Activity() {
                 val type = obj.getString("type")
                 val amount = obj.getLong("amount")
                 val date = obj.optString("date", "")
-                val bankName = obj.optString("bank", "بانک")
                 val title = obj.optString("title", "تراکنش")
                 val cat = obj.optString("category", "")
                 val tag = obj.optString("tag", "")
+                val txBalance = obj.optLong("balance", -1L)
                 val isDeposit = (type == "DEPOSIT")
 
                 val txCard = LinearLayout(this).apply {
@@ -1760,8 +1663,9 @@ class MainActivity : Activity() {
                     setTextColor(Color.parseColor(if (isDeposit) "#34D399" else "#FF5E8E"))
                 })
 
+                val balanceStr = if (txBalance >= 0) " | مانده: ${formatNumber(txBalance)}" else ""
                 txCard.addView(TextView(this).apply {
-                    text = "$bankName | دسته: $cat ${if (tag.isNotEmpty()) "| $tag" else ""} | $date"
+                    text = "دسته: $cat ${if (tag.isNotEmpty()) "| $tag" else ""} | $date$balanceStr"
                     textSize = 12f
                     setTextColor(Color.parseColor("#CBD5E1"))
                     setPadding(0, dp(6), 0, 0)
@@ -1836,102 +1740,6 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("انصراف", null)
             .show()
-    }
-
-    // =========================================================================
-    // تب ۵: تست پیامک بانک‌های مختلف
-    // =========================================================================
-    private fun renderToolsAndTestPage() {
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        val infoCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = createGlassBg("#24FFFFFF", "#6638BDF8", dp(20).toFloat(), 2)
-            setPadding(dp(18), dp(18), dp(18), dp(18))
-            layoutParams = createCardLayoutParams(bottomMarginDp = 20)
-        }
-
-        infoCard.addView(TextView(this).apply {
-            text = "🧪 بخش تست پیامک (پشتیبانی از چند بانک)"
-            textSize = 15.5f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#38BDF8"))
-        })
-
-        infoCard.addView(TextView(this).apply {
-            text = "\n• موجودی حساب بانکی شما از پیامک‌های واقعی بانک‌ها (ملی، ملت، صادرات، تجارت، سپه، پاسارگاد، بلوبانک، سامان، پارسیان، کشاورزی، مسکن، رسالت و...) خوانده می‌شود.\n• دکمه‌های زیر فقط برای تست نمایش پنجره هستند و موجودی حساب شما را تغییر نمی‌دهند."
-            textSize = 13f
-            setTextColor(Color.parseColor("#CBD5E1"))
-            setLineSpacing(8f, 1f)
-        })
-        pageContentContainer.addView(infoCard)
-
-        val testWithdrawBtn = Button(this).apply {
-            text = "🧪 تست پیامک برداشت (بدون کسر از موجودی)"
-            setTextColor(Color.WHITE)
-            textSize = 13.5f
-            setTypeface(null, Typeface.BOLD)
-            background = createGlassBg("#4D0284C7", "#9938BDF8", dp(16).toFloat(), 2)
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            layoutParams = createCardLayoutParams(bottomMarginDp = 16)
-            setOnClickListener {
-                val sampleWithdrawSms = """
-                    بانک ملی
-                    حساب ********
-                    برداشت1,511,000
-                    مانده712,744
-                    05/08/21-10:50
-                """.trimIndent()
-                SmsParser.processBankSms(this@MainActivity, sampleWithdrawSms, "BankMelli", isTest = true)
-            }
-        }
-        pageContentContainer.addView(testWithdrawBtn)
-
-        val testDepositBtn = Button(this).apply {
-            text = "🧪 تست پیامک واریز (بدون تغییر موجودی)"
-            setTextColor(Color.WHITE)
-            textSize = 13.5f
-            setTypeface(null, Typeface.BOLD)
-            background = createGlassBg("#4D059669", "#9934D399", dp(16).toFloat(), 2)
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            layoutParams = createCardLayoutParams(bottomMarginDp = 24)
-            setOnClickListener {
-                val sampleDepositSms = """
-                    بلوبانک
-                    واریز به حساب
-                    مبلغ: 1,250,000 ریال
-                    موجودی: 1,962,744 ریال
-                    05/08/21-19:57
-                """.trimIndent()
-                SmsParser.processBankSms(this@MainActivity, sampleDepositSms, "BluBank", isTest = true)
-            }
-        }
-        pageContentContainer.addView(testDepositBtn)
-
-        val resetBtn = Button(this).apply {
-            text = "🗑️ پاک کردن لیست تراکنش‌های ثبت‌شده"
-            setTextColor(Color.parseColor("#FCA5A5"))
-            textSize = 13.5f
-            setTypeface(null, Typeface.BOLD)
-            background = createGlassBg("#33DC2626", "#99F87171", dp(16).toFloat(), 2)
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            layoutParams = createCardLayoutParams(bottomMarginDp = 20)
-            setOnClickListener {
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("پاک کردن تراکنش‌ها")
-                    .setMessage("آیا مطمئن هستید که می‌خواهید لیست تراکنش‌ها را پاک کنید؟ (موجودی حساب بانکی شما حفظ می‌شود)")
-                    .setPositiveButton("بله، پاک شود") { _, _ ->
-                        prefs.edit()
-                            .putString(KEY_TRANSACTIONS, "[]")
-                            .apply()
-                        syncAllBanksFromSmsInbox(showToast = false)
-                        refreshUI()
-                    }
-                    .setNegativeButton("انصراف", null)
-                    .show()
-            }
-        }
-        pageContentContainer.addView(resetBtn)
     }
 
     private fun dp(value: Int): Int {
@@ -2087,211 +1895,81 @@ class SmsReceiver : BroadcastReceiver() {
         if (intent.action == Telephony.Sms.Intents.SMS_RECEIVED_ACTION) {
             val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
             val fullText = StringBuilder()
-            var sender = ""
             for (msg in messages) {
                 fullText.append(msg.messageBody)
-                if (sender.isEmpty()) sender = msg.originatingAddress ?: ""
             }
-            SmsParser.processBankSms(context, fullText.toString(), sender, isTest = false)
+            SmsParser.processBankSms(context, fullText.toString())
         }
     }
 }
 
-data class ParsedBankSms(
-    val bankKey: String,
-    val type: String?, // "DEPOSIT" or "WITHDRAW"
-    val amount: Long?,
-    val balance: Long?,
-    val dateStr: String
-)
-
 object SmsParser {
-
-    // پشتیبانی از الگوهای پیامک انواع بانک‌های ایران (ملی، ملت، صادرات، تجارت، سپه، پاسارگاد، بلوبانک، سامان، پارسیان، کشاورزی، مسکن، رسالت، رفاه و...)
-    fun parseBankSmsDetails(rawText: String, senderAddress: String = ""): ParsedBankSms? {
+    fun processBankSms(context: Context, rawText: String) {
         val text = normalizeDigits(rawText)
 
-        val hasBankContext = text.contains("مانده") ||
-                text.contains("موجودی") ||
-                text.contains("واریز") ||
-                text.contains("برداشت") ||
-                text.contains("حساب") ||
-                text.contains("بانک") ||
-                text.contains("بلو")
+        val depositMatch = Regex("""واریز\s*:?\s*([\d,]+)""").find(text)
+        val withdrawMatch = Regex("""برداشت\s*:?\s*([\d,]+)""").find(text)
+        val balanceMatch = Regex("""مانده\s*:?\s*([\d,]+)""").find(text)
+        val dateMatch = Regex("""(\d{2}/\d{2}/\d{2}-\d{2}:\d{2})""").find(text)
 
-        if (!hasBankContext) return null
+        if (depositMatch == null && withdrawMatch == null) return
 
-        val balanceMatch = Regex("""(?:مانده|موجودی|قابل برداشت)\s*:?\s*([\d,]+)""").find(text)
-        val balance = balanceMatch?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull()
-
-        val depositDirect = Regex("""(?:واریز|افزایش|بستانکار|واریز به حساب)\s*(?:مبلغ)?\s*:?\s*([\d,]+)""").find(text)
-        val withdrawDirect = Regex("""(?:برداشت|کاهش|بدهکار|خرید|پرداخت|برداشت از حساب)\s*(?:مبلغ)?\s*:?\s*([\d,]+)""").find(text)
-        val plusSignAmount = Regex("""\+\s*([\d,]{4,})""").find(text)
-        val minusSignAmount = Regex("""-\s*([\d,]{4,})""").find(text)
-        val genericAmount = Regex("""مبلغ\s*:?\s*([\d,]+)""").find(text)
-
-        var txType: String? = null
-        var amount: Long? = null
-
-        when {
-            depositDirect != null -> {
-                txType = "DEPOSIT"
-                amount = depositDirect.groupValues[1].replace(",", "").toLongOrNull()
-            }
-            withdrawDirect != null -> {
-                txType = "WITHDRAW"
-                amount = withdrawDirect.groupValues[1].replace(",", "").toLongOrNull()
-            }
-            text.contains("واریز") && genericAmount != null -> {
-                txType = "DEPOSIT"
-                amount = genericAmount.groupValues[1].replace(",", "").toLongOrNull()
-            }
-            (text.contains("برداشت") || text.contains("خرید")) && genericAmount != null -> {
-                txType = "WITHDRAW"
-                amount = genericAmount.groupValues[1].replace(",", "").toLongOrNull()
-            }
-            plusSignAmount != null -> {
-                txType = "DEPOSIT"
-                amount = plusSignAmount.groupValues[1].replace(",", "").toLongOrNull()
-            }
-            minusSignAmount != null -> {
-                txType = "WITHDRAW"
-                amount = minusSignAmount.groupValues[1].replace(",", "").toLongOrNull()
-            }
-        }
-
-        if (balance == null && amount == null) return null
-
-        val bankName = detectBankName(text, senderAddress)
-        val dateMatch = Regex("""(\d{2,4}/\d{2}/\d{2}(?:-\d{2}:\d{2})?|\d{2}:\d{2})""").find(text)
         val dateStr = dateMatch?.groupValues?.get(1) ?: "امروز"
 
-        return ParsedBankSms(
-            bankKey = bankName,
-            type = txType,
-            amount = amount,
-            balance = balance,
-            dateStr = dateStr
-        )
-    }
-
-    private fun detectBankName(text: String, sender: String): String {
-        val s = sender.lowercase(Locale.ROOT)
-        return when {
-            text.contains("ملی") || s.contains("melli") || s.contains("sadad") -> "بانک ملی"
-            text.contains("ملت") || s.contains("mellat") -> "بانک ملت"
-            text.contains("بلو") || s.contains("blu") -> "بلوبانک"
-            text.contains("سامان") || s.contains("saman") -> "بانک سامان"
-            text.contains("صادرات") || s.contains("saderat") || s.contains("bsi") -> "بانک صادرات"
-            text.contains("تجارت") || s.contains("tejarat") -> "بانک تجارت"
-            text.contains("سپه") || s.contains("sepah") -> "بانک سپه"
-            text.contains("پاسارگاد") || s.contains("pasargad") -> "بانک پاسارگاد"
-            text.contains("پارسیان") || s.contains("parsian") -> "بانک پارسیان"
-            text.contains("کشاورزی") || s.contains("keshavarzi") || s.contains("bki") -> "بانک کشاورزی"
-            text.contains("مسکن") || s.contains("maskan") -> "بانک مسکن"
-            text.contains("رسالت") || s.contains("resalat") -> "بانک رسالت"
-            text.contains("رفاه") || s.contains("refah") -> "بانک رفاه"
-            text.contains("آینده") || s.contains("ayandeh") -> "بانک آینده"
-            text.contains("شهر") || s.contains("shahr") -> "بانک شهر"
-            else -> {
-                val accMatch = Regex("""(?:حساب|کارت)\s*:?\s*([\d*]{4,})""").find(text)
-                if (accMatch != null) {
-                    "حساب ${accMatch.groupValues[1].takeLast(4)}"
-                } else if (sender.isNotBlank()) {
-                    "بانک ($sender)"
-                } else {
-                    "حساب بانکی اصلی"
-                }
-            }
-        }
-    }
-
-    fun processBankSms(
-        context: Context,
-        rawText: String,
-        senderAddress: String = "",
-        isTest: Boolean = false
-    ) {
-        val parsed = parseBankSmsDetails(rawText, senderAddress) ?: return
-
-        if (isTest) {
-            val amt = parsed.amount ?: 0L
-            if (parsed.type == "DEPOSIT") {
-                sendNotification(
-                    context,
-                    "[تست] واریز (${parsed.bankKey})",
-                    "تست پیامک واریز به مبلغ $amt (بدون تغییر در موجودی)"
-                )
-                MainActivity.onTestSmsReceived?.invoke("DEPOSIT", amt, parsed.bankKey, parsed.dateStr)
-            } else if (parsed.type == "WITHDRAW") {
-                sendNotification(
-                    context,
-                    "[تست] برداشت (${parsed.bankKey})",
-                    "تست پیامک برداشت به مبلغ $amt (بدون کسر از موجودی)"
-                )
-                MainActivity.onTestSmsReceived?.invoke("WITHDRAW", amt, parsed.bankKey, parsed.dateStr)
-            }
-            return
-        }
-
         val prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
-        val editor = prefs.edit()
+        val arr = JSONArray(prefs.getString(MainActivity.KEY_TRANSACTIONS, "[]"))
+        val balance = balanceMatch?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull()
 
-        if (parsed.balance != null) {
-            val banksJson = JSONObject(prefs.getString(MainActivity.KEY_BANK_BALANCES, "{}"))
-            banksJson.put(parsed.bankKey, JSONObject().apply {
-                put("bankName", parsed.bankKey)
-                put("balance", parsed.balance)
-                put("date", parsed.dateStr)
-            })
-            editor.putString(MainActivity.KEY_BANK_BALANCES, banksJson.toString())
+        val editor = prefs.edit()
+        if (balance != null) {
+            editor.putLong(MainActivity.KEY_BALANCE, balance)
+            editor.putString(MainActivity.KEY_BALANCE_DATE, dateStr)
         }
 
-        val arr = JSONArray(prefs.getString(MainActivity.KEY_TRANSACTIONS, "[]"))
-        val amount = parsed.amount ?: 0L
-
-        if (parsed.type == "DEPOSIT" && amount > 0) {
-            val obj = JSONObject().apply {
-                put("id", System.currentTimeMillis())
-                put("type", "DEPOSIT")
-                put("amount", amount)
-                put("bank", parsed.bankKey)
-                put("date", parsed.dateStr)
-                put("balance", parsed.balance ?: -1L)
-                put("title", "درآمد جدید")
-                put("category", MainActivity.INCOME_CATEGORIES[0])
-                put("tag", "#درآمد")
-                put("pending", true)
+        if (depositMatch != null) {
+            val amount = depositMatch.groupValues[1].replace(",", "").toLongOrNull() ?: 0L
+            if (amount > 0) {
+                val obj = JSONObject().apply {
+                    put("id", System.currentTimeMillis())
+                    put("type", "DEPOSIT")
+                    put("amount", amount)
+                    put("date", dateStr)
+                    put("balance", balance ?: -1L)
+                    put("title", "درآمد جدید")
+                    put("category", MainActivity.INCOME_CATEGORIES[0])
+                    put("tag", "#درآمد")
+                    put("pending", true)
+                }
+                arr.put(obj)
+                editor.putString(MainActivity.KEY_TRANSACTIONS, arr.toString()).apply()
+                sendNotification(
+                    context,
+                    "واریز بانکی: منبع درآمد چیست؟",
+                    "مبلغ ${depositMatch.groupValues[1]} واریز شد. ضربه بزنید و دسته درآمد را مشخص کنید."
+                )
             }
-            arr.put(obj)
-            editor.putString(MainActivity.KEY_TRANSACTIONS, arr.toString()).apply()
-            sendNotification(
-                context,
-                "واریز (${parsed.bankKey}): منبع درآمد چیست؟",
-                "مبلغ $amount واریز شد. ضربه بزنید و دسته درآمد را مشخص کنید."
-            )
-        } else if (parsed.type == "WITHDRAW" && amount > 0) {
-            val obj = JSONObject().apply {
-                put("id", System.currentTimeMillis())
-                put("type", "WITHDRAW")
-                put("amount", amount)
-                put("bank", parsed.bankKey)
-                put("date", parsed.dateStr)
-                put("balance", parsed.balance ?: -1L)
-                put("title", "ثبت نشده")
-                put("category", MainActivity.EXPENSE_CATEGORIES[0])
-                put("tag", "#ضروری")
-                put("pending", true)
+        } else if (withdrawMatch != null) {
+            val amount = withdrawMatch.groupValues[1].replace(",", "").toLongOrNull() ?: 0L
+            if (amount > 0) {
+                val obj = JSONObject().apply {
+                    put("id", System.currentTimeMillis())
+                    put("type", "WITHDRAW")
+                    put("amount", amount)
+                    put("date", dateStr)
+                    put("balance", balance ?: -1L)
+                    put("title", "ثبت نشده")
+                    put("category", MainActivity.EXPENSE_CATEGORIES[0])
+                    put("tag", "#ضروری")
+                    put("pending", true)
+                }
+                arr.put(obj)
+                editor.putString(MainActivity.KEY_TRANSACTIONS, arr.toString()).apply()
+                sendNotification(
+                    context,
+                    "برداشت بانکی: چه چیزی خریدید؟",
+                    "مبلغ ${withdrawMatch.groupValues[1]} برداشت شد. ضربه بزنید و دسته و تگ را مشخص کنید."
+                )
             }
-            arr.put(obj)
-            editor.putString(MainActivity.KEY_TRANSACTIONS, arr.toString()).apply()
-            sendNotification(
-                context,
-                "برداشت (${parsed.bankKey}): چه چیزی خریدید؟",
-                "مبلغ $amount برداشت شد. ضربه بزنید و دسته را مشخص کنید."
-            )
-        } else {
-            editor.apply()
         }
 
         MainActivity.onSmsReceivedUIUpdate?.invoke()
@@ -2305,7 +1983,7 @@ object SmsParser {
             res = res.replace(persian[i], '0' + i)
             res = res.replace(arabic[i], '0' + i)
         }
-        return res.replace('٬', ',').replace('ي', 'ی').replace('ك', 'ک')
+        return res.replace('٬', ',')
     }
 
     private fun sendNotification(context: Context, title: String, message: String) {
