@@ -7,7 +7,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="مدیریت خرج ۱۰ روزه"
+        android:label="پولای من"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
 
