@@ -34,18 +34,18 @@ class MainActivity : Activity() {
 
     companion object {
         var onSmsReceivedUIUpdate: (() -> Unit)? = null
-        var onTestSmsReceived: ((type: String, amount: Long, dateStr: String) -> Unit)? = null
+        var onTestSmsReceived: ((type: String, amount: Long, bankName: String, dateStr: String) -> Unit)? = null
 
-        const val PREFS_NAME = "StudentPfmPrefs"
+        const val PREFS_NAME = "PoolayeManPrefs"
         const val KEY_TRANSACTIONS = "transactions"
-        const val KEY_BALANCE = "last_balance"
-        const val KEY_BALANCE_DATE = "last_balance_date"
-        const val KEY_CYCLE_START = "cycle_start_ms"
-        const val KEY_BUDGET_CAPS = "budget_caps"
+        const val KEY_BANK_BALANCES = "bank_balances_map"
+        const val KEY_ENTERTAINMENT_CAP = "entertainment_budget_cap"
         const val KEY_DEBTS = "student_debts"
         const val KEY_GOALS = "saving_goals"
 
-        // دسته‌بندی‌های دو سطحی دانشجویی (اصلی و فرعی)
+        const val ENTERTAINMENT_CATEGORY = "تفریح و سرگرمی"
+        const val DEFAULT_ENTERTAINMENT_CAP = 1500000L
+
         val EXPENSE_CATEGORIES = listOf(
             "خوراک",
             "تفریح و سرگرمی",
@@ -62,7 +62,6 @@ class MainActivity : Activity() {
             "مسکن و رفت‌وآمد" to listOf("خوابگاه یا اجاره", "مترو و اتوبوس", "اسنپ و تپسی", "شارژ و قبوض")
         )
 
-        // تگ‌های رفتاری سبک زندگی دانشجو
         val BEHAVIOR_TAGS = listOf(
             "#ضروری",
             "#خرید_هیجانی",
@@ -70,21 +69,11 @@ class MainActivity : Activity() {
             "#عادی"
         )
 
-        // منابع ورودی (درآمدهای دانشجویی)
         val INCOME_CATEGORIES = listOf(
             "کمک‌هزینه خانواده",
             "کار پاره‌وقت / پروژه",
             "وام دانشجویی",
             "هدیه و سایر"
-        )
-
-        // سقف بودجه پیش‌فرض ماهانه/دوره‌ای برای هر دسته
-        val DEFAULT_BUDGET_CAPS = mapOf(
-            "خوراک" to 2500000L,
-            "تفریح و سرگرمی" to 1500000L,
-            "درمان و سلامت" to 1000000L,
-            "تحصیل و رشد فردی" to 1500000L,
-            "مسکن و رفت‌وآمد" to 2000000L
         )
 
         val CHART_COLORS_EXPENSE = listOf("#FF5E8E", "#22D3EE", "#34D399", "#A855F7", "#FBBF24")
@@ -96,7 +85,7 @@ class MainActivity : Activity() {
     private lateinit var pageContentContainer: LinearLayout
     private lateinit var bottomNavBar: LinearLayout
 
-    // 0 = داشبورد سبک زندگی | 1 = بودجه و تفکیک | 2 = دُنگ و قرض | 3 = قلک و گردش | 4 = ثبت و تست
+    // 0 = سبک زندگی | 1 = سقف بودجه | 2 = دنگ‌ها | 3 = قلک | 4 = تست
     private var currentTabIndex = 0
     private var showExpenseInBarChart = true
     private var isDialogShowing = false
@@ -121,7 +110,6 @@ class MainActivity : Activity() {
             background = cosmicBgGradient
         }
 
-        // ۱. هدر شیشه‌ای بالایی
         val topAppBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -130,7 +118,7 @@ class MainActivity : Activity() {
         }
 
         val appLogoBadge = TextView(this).apply {
-            text = "🎓"
+            text = "💳"
             textSize = 18f
             gravity = Gravity.CENTER
             background = createGlassBg("#4D38BDF8", "#9938BDF8", dp(10).toFloat(), 2)
@@ -139,11 +127,11 @@ class MainActivity : Activity() {
         topAppBar.addView(appLogoBadge)
 
         val appTitle = TextView(this).apply {
-            text = "مدیریت مالی و سبک زندگی دانشجو"
-            textSize = 16f
+            text = "پولای من"
+            textSize = 18f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
-            setPadding(dp(10), 0, dp(10), 0)
+            setPadding(dp(12), 0, dp(12), 0)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         topAppBar.addView(appTitle)
@@ -162,14 +150,12 @@ class MainActivity : Activity() {
         topAppBar.addView(quickAddBadge)
         rootLayout.addView(topAppBar)
 
-        // ۲. نوار تب‌های شیشه‌ای بالای صفحه
         topSubTabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             background = createGlassBg("#1AFFFFFF", "#26FFFFFF", 0f, 1)
         }
         rootLayout.addView(topSubTabBar)
 
-        // ۳. بخش محتوای قابل اسکرول
         val scrollView = ScrollView(this).apply {
             isFillViewport = true
             layoutParams = LinearLayout.LayoutParams(
@@ -187,7 +173,6 @@ class MainActivity : Activity() {
         scrollView.addView(pageContentContainer)
         rootLayout.addView(scrollView)
 
-        // ۴. نوار ناوبری شیشه‌ای پایین صفحه (۵ بخش اصلی)
         bottomNavBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             background = createGlassBg("#29FFFFFF", "#4DFFFFFF", dp(20).toFloat(), 2)
@@ -205,7 +190,7 @@ class MainActivity : Activity() {
 
         initDefaultsIfNeeded()
         requestNeededPermissions()
-        syncLatestBalanceFromSmsInbox(showToast = false)
+        syncAllBanksFromSmsInbox(showToast = false)
     }
 
     override fun onResume() {
@@ -216,12 +201,12 @@ class MainActivity : Activity() {
                 checkAndAskPendingTransactions()
             }
         }
-        onTestSmsReceived = { type, amount, dateStr ->
+        onTestSmsReceived = { type, amount, bankName, dateStr ->
             runOnUiThread {
-                showTestTransactionDialog(type, amount, dateStr)
+                showTestTransactionDialog(type, amount, bankName, dateStr)
             }
         }
-        syncLatestBalanceFromSmsInbox(showToast = false)
+        syncAllBanksFromSmsInbox(showToast = false)
         refreshUI()
         checkAndAskPendingTransactions()
     }
@@ -239,7 +224,7 @@ class MainActivity : Activity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 101) {
-            syncLatestBalanceFromSmsInbox(showToast = true)
+            syncAllBanksFromSmsInbox(showToast = true)
             refreshUI()
         }
     }
@@ -248,14 +233,8 @@ class MainActivity : Activity() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val editor = prefs.edit()
 
-        if (!prefs.contains(KEY_CYCLE_START)) {
-            editor.putLong(KEY_CYCLE_START, System.currentTimeMillis())
-        }
-
-        if (!prefs.contains(KEY_BUDGET_CAPS)) {
-            val capsObj = JSONObject()
-            DEFAULT_BUDGET_CAPS.forEach { (cat, cap) -> capsObj.put(cat, cap) }
-            editor.putString(KEY_BUDGET_CAPS, capsObj.toString())
+        if (!prefs.contains(KEY_ENTERTAINMENT_CAP)) {
+            editor.putLong(KEY_ENTERTAINMENT_CAP, DEFAULT_ENTERTAINMENT_CAP)
         }
 
         if (!prefs.contains(KEY_GOALS)) {
@@ -268,7 +247,7 @@ class MainActivity : Activity() {
                 })
                 put(JSONObject().apply {
                     put("id", 2L)
-                    put("title", "سفر دانشجویی تابستانی")
+                    put("title", "سفر تابستانی")
                     put("target", 5000000L)
                     put("saved", 1200000L)
                 })
@@ -297,10 +276,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // =========================================================================
-    // خواندن خودکار آخرین موجودی واقعی از صندوق پیامک‌های گوشی
-    // =========================================================================
-    private fun syncLatestBalanceFromSmsInbox(showToast: Boolean) {
+    private fun syncAllBanksFromSmsInbox(showToast: Boolean) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
             checkSelfPermission(Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -311,53 +287,47 @@ class MainActivity : Activity() {
             val inboxUri = Uri.parse("content://sms/inbox")
             val cursor = contentResolver.query(
                 inboxUri,
-                arrayOf("_id", "body", "date"),
+                arrayOf("_id", "address", "body", "date"),
                 null,
                 null,
                 "date DESC"
             )
 
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val banksJson = JSONObject(prefs.getString(KEY_BANK_BALANCES, "{}"))
+            val updatedBanksInThisScan = mutableSetOf<String>()
+
             cursor?.use { c ->
                 val bodyIndex = c.getColumnIndex("body")
+                val addressIndex = c.getColumnIndex("address")
                 var checkedCount = 0
 
-                while (c.moveToNext() && checkedCount < 400) {
+                while (c.moveToNext() && checkedCount < 600) {
                     checkedCount++
                     if (bodyIndex < 0) continue
                     val rawBody = c.getString(bodyIndex) ?: continue
-                    val normalized = SmsParser.normalizeDigits(rawBody)
+                    val sender = if (addressIndex >= 0) (c.getString(addressIndex) ?: "") else ""
 
-                    val hasBankKeywords = normalized.contains("واریز") ||
-                            normalized.contains("برداشت") ||
-                            normalized.contains("حساب")
-                    val balanceMatch = Regex("""مانده\s*:?\s*([\d,]+)""").find(normalized)
-
-                    if (hasBankKeywords && balanceMatch != null) {
-                        val extractedBalance = balanceMatch.groupValues[1]
-                            .replace(",", "")
-                            .toLongOrNull()
-
-                        if (extractedBalance != null) {
-                            val dateMatch = Regex("""(\d{2}/\d{2}/\d{2}-\d{2}:\d{2})""").find(normalized)
-                            val dateStr = dateMatch?.groupValues?.get(1) ?: "آخرین پیامک بانک"
-
-                            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                            prefs.edit()
-                                .putLong(KEY_BALANCE, extractedBalance)
-                                .putString(KEY_BALANCE_DATE, dateStr)
-                                .apply()
-
-                            if (showToast) {
-                                Toast.makeText(
-                                    this,
-                                    "✅ موجودی از آخرین پیامک بانک خوانده شد: ${formatNumber(extractedBalance)}",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                            break
-                        }
+                    val parsed = SmsParser.parseBankSmsDetails(rawBody, sender) ?: continue
+                    if (parsed.balance != null && !updatedBanksInThisScan.contains(parsed.bankKey)) {
+                        updatedBanksInThisScan.add(parsed.bankKey)
+                        banksJson.put(parsed.bankKey, JSONObject().apply {
+                            put("bankName", parsed.bankKey)
+                            put("balance", parsed.balance)
+                            put("date", parsed.dateStr)
+                        })
                     }
                 }
+            }
+
+            prefs.edit().putString(KEY_BANK_BALANCES, banksJson.toString()).apply()
+
+            if (showToast && updatedBanksInThisScan.isNotEmpty()) {
+                Toast.makeText(
+                    this,
+                    "✅ موجودی ${updatedBanksInThisScan.size} حساب بانکی از پیامک‌ها بروزرسانی شد",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -375,17 +345,21 @@ class MainActivity : Activity() {
                 val txId = obj.getLong("id")
                 val amount = obj.getLong("amount")
                 val dateStr = obj.optString("date", "امروز")
+                val bankName = obj.optString("bank", "بانک")
                 val type = obj.optString("type", "WITHDRAW")
-                showAskRealTransactionDialog(txId, amount, dateStr, type)
+                showAskRealTransactionDialog(txId, amount, bankName, dateStr, type)
                 break
             }
         }
     }
 
-    // =========================================================================
-    // پنجره ثبت جزئیات پیامک واقعی (با دسته‌بندی دو سطحی + تگ رفتاری)
-    // =========================================================================
-    private fun showAskRealTransactionDialog(txId: Long, amount: Long, dateStr: String, type: String) {
+    private fun showAskRealTransactionDialog(
+        txId: Long,
+        amount: Long,
+        bankName: String,
+        dateStr: String,
+        type: String
+    ) {
         isDialogShowing = true
         val isWithdraw = (type == "WITHDRAW")
 
@@ -399,24 +373,24 @@ class MainActivity : Activity() {
         scrollWrapper.addView(dialogLayout)
 
         dialogLayout.addView(TextView(this).apply {
-            text = if (isWithdraw) "✨ ثبت خرید و تگ سبک زندگی" else "💰 ثبت منبع ورودی دانشجویی"
-            textSize = 17.5f
+            text = if (isWithdraw) "✨ ثبت مخارج جدید ($bankName)" else "💰 ثبت درآمد جدید ($bankName)"
+            textSize = 17f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor(if (isWithdraw) "#38BDF8" else "#34D399"))
         })
 
         dialogLayout.addView(TextView(this).apply {
             text = if (isWithdraw) {
-                "\nمبلغ ${formatNumber(amount)} برداشت شد ($dateStr).\nچه چیزی خریده‌اید؟"
+                "\nمبلغ ${formatNumber(amount)} برداشت شد ($dateStr).\nچه چیزی با این مبلغ خریده‌اید؟"
             } else {
-                "\nمبلغ ${formatNumber(amount)} واریز شد ($dateStr).\nتوضیح این دریافتی چیست؟"
+                "\nمبلغ ${formatNumber(amount)} واریز شد ($dateStr).\nتوضیح این درآمد چیست؟"
             }
             textSize = 14f
             setTextColor(Color.parseColor("#E2E8F0"))
         })
 
         val inputEdit = EditText(this).apply {
-            hint = if (isWithdraw) "مثلاً: ناهار سلف، قهوه، اسنپ..." else "مثلاً: پول توجیبی، پروژه دانشجویی..."
+            hint = if (isWithdraw) "مثلاً: ناهار، قهوه، اسنپ..." else "مثلاً: کمک‌هزینه، پروژه..."
             setHintTextColor(Color.parseColor("#94A3B8"))
             setTextColor(Color.WHITE)
             textSize = 14f
@@ -428,11 +402,10 @@ class MainActivity : Activity() {
         dialogLayout.addView(inputEdit)
 
         var selectedTag = BEHAVIOR_TAGS[0]
-        var selectedSubcategory = ""
 
         if (isWithdraw) {
             dialogLayout.addView(TextView(this).apply {
-                text = "🏷️ تگ رفتاری این خرید را انتخاب کنید:"
+                text = "🏷️ تگ رفتاری:"
                 textSize = 13.5f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(Color.parseColor("#CBD5E1"))
@@ -478,7 +451,7 @@ class MainActivity : Activity() {
         }
 
         dialogLayout.addView(TextView(this).apply {
-            text = if (isWithdraw) "📂 دسته اصلی و زیرمجموعه:" else "📂 دسته درآمد:"
+            text = if (isWithdraw) "📂 انتخاب دسته مخارج:" else "📂 انتخاب دسته درآمدها:"
             textSize = 13.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#CBD5E1"))
@@ -515,9 +488,9 @@ class MainActivity : Activity() {
                 layoutParams = createCardLayoutParams(bottomMarginDp = 8)
 
                 setOnClickListener {
-                    val defaultTitle = if (isWithdraw) (subList.firstOrNull() ?: "خرید دانشجویی") else "واریز بانکی"
+                    val defaultTitle = if (isWithdraw) (subList.firstOrNull() ?: "خرید") else "درآمد"
                     val itemTitle = inputEdit.text.toString().trim().ifEmpty { defaultTitle }
-                    selectedSubcategory = subList.firstOrNull() ?: ""
+                    val selectedSubcategory = subList.firstOrNull() ?: ""
                     updateTransactionDetails(txId, itemTitle, categoryName, selectedSubcategory, selectedTag)
                     isDialogShowing = false
                     dialog.dismiss()
@@ -531,9 +504,6 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
-    // =========================================================================
-    // ثبت سریع ۳ مرحله‌ای (Quick Entry) در کمتر از ۵ ثانیه
-    // =========================================================================
     private fun showQuickEntryDialog() {
         val dialogLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -543,14 +513,14 @@ class MainActivity : Activity() {
         }
 
         dialogLayout.addView(TextView(this).apply {
-            text = "⚡ ثبت سریع تراکنش (۳ مرحله‌ای)"
+            text = "⚡ ثبت سریع تراکنش"
             textSize = 17f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#34D399"))
         })
 
         val amountInput = EditText(this).apply {
-            hint = "۱. مبلغ به تومان (مثلاً: 85000)"
+            hint = "۱. مبلغ (مثلاً: 85000)"
             inputType = InputType.TYPE_CLASS_NUMBER
             setHintTextColor(Color.parseColor("#94A3B8"))
             setTextColor(Color.WHITE)
@@ -610,7 +580,7 @@ class MainActivity : Activity() {
         dialogLayout.addView(tagRow)
 
         dialogLayout.addView(TextView(this).apply {
-            text = "۳. روی دسته بزنید تا ذخیره شود:"
+            text = "۳. انتخاب دسته:"
             textSize = 13f
             setTextColor(Color.parseColor("#CBD5E1"))
             setPadding(0, 0, 0, dp(6))
@@ -660,8 +630,9 @@ class MainActivity : Activity() {
             put("id", System.currentTimeMillis())
             put("type", type)
             put("amount", amount)
+            put("bank", "ثبت دستی")
             put("date", "ثبت دستی")
-            put("balance", prefs.getLong(KEY_BALANCE, -1L))
+            put("balance", -1L)
             put("title", title)
             put("category", category)
             put("tag", tag)
@@ -671,8 +642,7 @@ class MainActivity : Activity() {
         prefs.edit().putString(KEY_TRANSACTIONS, arr.toString()).apply()
     }
 
-    // پنجره تست آزمایشی (بدون تغییر در موجودی واقعی)
-    private fun showTestTransactionDialog(type: String, amount: Long, dateStr: String) {
+    private fun showTestTransactionDialog(type: String, amount: Long, bankName: String, dateStr: String) {
         val isWithdraw = (type == "WITHDRAW")
 
         val dialogLayout = LinearLayout(this).apply {
@@ -683,14 +653,14 @@ class MainActivity : Activity() {
         }
 
         dialogLayout.addView(TextView(this).apply {
-            text = if (isWithdraw) "🧪 تست پنجره خرید دانشجویی (آزمایشی)" else "🧪 تست پنجره واریز (آزمایشی)"
+            text = if (isWithdraw) "🧪 تست پیامک برداشت ($bankName)" else "🧪 تست پیامک واریز ($bankName)"
             textSize = 17f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#FBBF24"))
         })
 
         dialogLayout.addView(TextView(this).apply {
-            text = "⚠️ این فقط یک تست است و از موجودی واقعی شما کم نمی‌کند."
+            text = "⚠️ این فقط یک تست است و روی موجودی حساب بانکی شما تاثیر نمی‌گذارد."
             textSize = 12.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#FDE047"))
@@ -730,7 +700,7 @@ class MainActivity : Activity() {
                     dialog.dismiss()
                     Toast.makeText(
                         this@MainActivity,
-                        "✅ تست انجام شد: بخش «$categoryName» (موجودی واقعی تغییر نکرد)",
+                        "✅ تست انجام شد: بخش «$categoryName» (موجودی تغییر نکرد)",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -781,10 +751,10 @@ class MainActivity : Activity() {
     private fun renderTopSubTabs() {
         topSubTabBar.removeAllViews()
         val topTabs = listOf(
-            "تحلیل سبک زندگی" to 0,
-            "سقف بودجه و تفکیک" to 1,
-            "دُنگ و هم‌اتاقی" to 2,
-            "قلک و گردش" to 3
+            "سبک زندگی" to 0,
+            "سقف بودجه" to 1,
+            "دنگ‌ها" to 2,
+            "قلک" to 3
         )
 
         topTabs.forEach { (title, targetIndex) ->
@@ -801,7 +771,7 @@ class MainActivity : Activity() {
 
             tabItemLayout.addView(TextView(this).apply {
                 text = title
-                textSize = 12f
+                textSize = 13f
                 gravity = Gravity.CENTER
                 setPadding(dp(4), dp(11), dp(4), dp(9))
                 setTypeface(null, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
@@ -820,9 +790,9 @@ class MainActivity : Activity() {
     private fun renderBottomNavBar() {
         bottomNavBar.removeAllViews()
         val navItems = listOf(
-            "📊 داشبورد",
-            "🎯 بودجه",
-            "🤝 دُنگ",
+            "📊 سبک زندگی",
+            "🎯 سقف بودجه",
+            "🤝 دنگ‌ها",
             "🐷 قلک",
             "⚙️ تست"
         )
@@ -850,15 +820,24 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // تب ۱: داشبورد تحلیل سبک زندگی دانشجو (موجودی، Burn Rate، قانون ۵۰/۳۰/۲۰، نمودارها)
+    // تب ۱: سبک زندگی
     // =========================================================================
     private fun renderLifestyleAnalyticsPage() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val arr = JSONArray(prefs.getString(KEY_TRANSACTIONS, "[]"))
-        val lastBalance = prefs.getLong(KEY_BALANCE, 0L)
-        val lastBalanceDate = prefs.getString(KEY_BALANCE_DATE, "در انتظار خواندن پیامک...") ?: ""
-        val cycleStart = prefs.getLong(KEY_CYCLE_START, System.currentTimeMillis())
-        val daysPassed = ((System.currentTimeMillis() - cycleStart) / (1000 * 60 * 60 * 24)).toInt().coerceAtLeast(1)
+        val banksJson = JSONObject(prefs.getString(KEY_BANK_BALANCES, "{}"))
+
+        var totalBankBalance = 0L
+        val bankLines = mutableListOf<String>()
+        val keys = banksJson.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val bObj = banksJson.getJSONObject(k)
+            val bVal = bObj.optLong("balance", 0L)
+            val bDate = bObj.optString("date", "")
+            totalBankBalance += bVal
+            bankLines.add("• $k : ${formatNumber(bVal)} ($bDate)")
+        }
 
         var totalDeposit = 0L
         var totalWithdraw = 0L
@@ -872,7 +851,9 @@ class MainActivity : Activity() {
         EXPENSE_CATEGORIES.forEach { expenseSums[it] = 0L }
         INCOME_CATEGORIES.forEach { incomeSums[it] = 0L }
 
-        for (i in 0 until arr.length()) {
+        val totalTxCount = arr.length()
+
+        for (i in 0 until totalTxCount) {
             val obj = arr.getJSONObject(i)
             val amount = obj.getLong("amount")
             val type = obj.getString("type")
@@ -887,7 +868,7 @@ class MainActivity : Activity() {
                 expenseSums[cat] = (expenseSums[cat] ?: 0L) + amount
 
                 if (tag == "#خرید_هیجانی") impulseCount++
-                if (cat == "تفریح و سرگرمی" || tag == "#خرید_هیجانی") {
+                if (cat == ENTERTAINMENT_CATEGORY || tag == "#خرید_هیجانی") {
                     wantsTotal += amount
                 } else {
                     needsTotal += amount
@@ -895,116 +876,94 @@ class MainActivity : Activity() {
             }
         }
 
-        // ۱. کارت شیشه‌ای موجودی واقعی و نرخ مصرف پول (Burn Rate)
-        val bankAndBurnCard = LinearLayout(this).apply {
+        // ۱. کارت موجودی حساب بانکی شما (پشتیبانی از چند بانک)
+        val bankCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = createGlassBg("#26FFFFFF", "#6638BDF8", dp(22).toFloat(), 3)
             setPadding(dp(18), dp(18), dp(18), dp(18))
             layoutParams = createCardLayoutParams(bottomMarginDp = 20)
         }
 
-        bankAndBurnCard.addView(TextView(this).apply {
-            text = "🏦 موجودی واقعی کارت (از آخرین پیامک بانک)"
-            textSize = 14f
+        bankCard.addView(TextView(this).apply {
+            text = "🏦 موجودی حساب بانکی شما"
+            textSize = 15f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#38BDF8"))
         })
 
-        bankAndBurnCard.addView(TextView(this).apply {
-            text = formatNumber(lastBalance)
+        bankCard.addView(TextView(this).apply {
+            text = formatNumber(totalBankBalance)
             textSize = 23f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            setPadding(0, dp(10), 0, dp(4))
+            setPadding(0, dp(10), 0, dp(6))
         })
 
-        bankAndBurnCard.addView(TextView(this).apply {
-            text = "بروزرسانی از پیامک: $lastBalanceDate  |  روز $daysPassed از دوره ۱۰ روزه"
-            textSize = 11.5f
-            setTextColor(Color.parseColor("#94A3B8"))
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(12))
-        })
-
-        // محاسبه Burn Rate (نرخ مصرف روزانه و پیش‌بینی دوام موجودی)
-        val avgDailySpend = if (totalWithdraw > 0) (totalWithdraw / daysPassed) else 0L
-        val daysRemaining = if (avgDailySpend > 0 && lastBalance > 0) (lastBalance / avgDailySpend) else -1L
-
-        val burnRateBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = createGlassBg("#1F000000", "#4D22D3EE", dp(14).toFloat(), 2)
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            layoutParams = createCardLayoutParams(bottomMarginDp = 12)
-        }
-
-        burnRateBox.addView(TextView(this).apply {
-            text = "🔥 شاخص نرخ مصرف پول (Burn Rate):"
-            textSize = 13f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#22D3EE"))
-        })
-
-        val burnMsg = if (avgDailySpend > 0) {
-            val daysStr = if (daysRemaining >= 0) "تا حدود $daysRemaining روز دیگر کافی است" else "نامشخص"
-            "• میانگین خرج روزانه شما: ${formatNumber(avgDailySpend)}\n• با سرعت فعلی، موجودی شما $daysStr."
+        if (bankLines.isNotEmpty()) {
+            bankCard.addView(TextView(this).apply {
+                text = bankLines.joinToString("\n")
+                textSize = 12f
+                setTextColor(Color.parseColor("#CBD5E1"))
+                setLineSpacing(6f, 1f)
+                setPadding(0, 0, 0, dp(12))
+            })
         } else {
-            "هنوز خرجی در این دوره ثبت نشده تا سرعت مصرف محاسبه شود."
+            bankCard.addView(TextView(this).apply {
+                text = "در انتظار خواندن پیامک‌های بانکی..."
+                textSize = 12f
+                setTextColor(Color.parseColor("#94A3B8"))
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, dp(12))
+            })
         }
-
-        burnRateBox.addView(TextView(this).apply {
-            text = burnMsg
-            textSize = 12.5f
-            setTextColor(Color.parseColor("#E2E8F0"))
-            setPadding(0, dp(6), 0, 0)
-            setLineSpacing(6f, 1f)
-        })
-        bankAndBurnCard.addView(burnRateBox)
 
         val refreshInboxBtn = Button(this).apply {
-            text = "🔄 خواندن مجدد موجودی از آخرین پیامک گوشی"
+            text = "🔄 بروزرسانی موجودی همه بانک‌ها از پیامک‌ها"
             textSize = 12.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
             background = createGlassBg("#3338BDF8", "#8038BDF8", dp(12).toFloat(), 2)
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
             setOnClickListener {
-                syncLatestBalanceFromSmsInbox(showToast = true)
+                syncAllBanksFromSmsInbox(showToast = true)
                 refreshUI()
             }
         }
-        bankAndBurnCard.addView(refreshInboxBtn)
-        pageContentContainer.addView(bankAndBurnCard)
+        bankCard.addView(refreshInboxBtn)
+        pageContentContainer.addView(bankCard)
 
-        // ۲. کارت تحلیل قانون ۵۰/۳۰/۲۰ (نیازهای ضروری در برابر خواسته‌ها و خرید هیجانی)
-        val ruleCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = createGlassBg("#22FFFFFF", "#66A855F7", dp(20).toFloat(), 2)
-            setPadding(dp(18), dp(16), dp(18), dp(16))
-            layoutParams = createCardLayoutParams(bottomMarginDp = 20)
+        // ۲. تحلیل سبک زندگی (فقط بعد از ثبت حداقل ۱۰ تراکنش نمایش داده شود)
+        if (totalTxCount >= 10) {
+            val ruleCard = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = createGlassBg("#22FFFFFF", "#66A855F7", dp(20).toFloat(), 2)
+                setPadding(dp(18), dp(16), dp(18), dp(16))
+                layoutParams = createCardLayoutParams(bottomMarginDp = 20)
+            }
+
+            ruleCard.addView(TextView(this).apply {
+                text = "⚖️ تحلیل سبک زندگی"
+                textSize = 15f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#C084FC"))
+            })
+
+            val needsPct = if (totalWithdraw > 0) ((needsTotal * 100f) / totalWithdraw).toInt() else 0
+            val wantsPct = if (totalWithdraw > 0) ((wantsTotal * 100f) / totalWithdraw).toInt() else 0
+
+            ruleCard.addView(TextView(this).apply {
+                text = "\n• نیازهای ضروری (خوراک پایه، تحصیل، درمان، رفت‌وآمد): $needsPct٪ (${formatNumber(needsTotal)})\n" +
+                        "• خواسته‌ها و تفریح (کافه، سرگرمی، خرید هیجانی): $wantsPct٪ (${formatNumber(wantsTotal)})\n" +
+                        "• تعداد خریدهای با تگ #خرید_هیجانی: $impulseCount مورد"
+                textSize = 13f
+                setTextColor(Color.parseColor("#E2E8F0"))
+                setLineSpacing(8f, 1f)
+            })
+            pageContentContainer.addView(ruleCard)
         }
 
-        ruleCard.addView(TextView(this).apply {
-            text = "⚖️ تحلیل سبک زندگی (نیازها در برابر خواسته‌ها)"
-            textSize = 15f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#C084FC"))
-        })
-
-        val needsPct = if (totalWithdraw > 0) ((needsTotal * 100f) / totalWithdraw).toInt() else 0
-        val wantsPct = if (totalWithdraw > 0) ((wantsTotal * 100f) / totalWithdraw).toInt() else 0
-
-        ruleCard.addView(TextView(this).apply {
-            text = "\n• نیازهای ضروری (خوراک پایه، تحصیل، درمان، رفت‌وآمد): $needsPct٪ (${formatNumber(needsTotal)})\n" +
-                    "• خواسته‌ها و تفریح (کافه، سرگرمی، خرید هیجانی): $wantsPct٪ (${formatNumber(wantsTotal)})\n" +
-                    "• تعداد خریدهای با تگ #خرید_هیجانی در این دوره: $impulseCount مورد"
-            textSize = 13f
-            setTextColor(Color.parseColor("#E2E8F0"))
-            setLineSpacing(8f, 1f)
-        })
-        pageContentContainer.addView(ruleCard)
-
-        // ۳. کارت نمودار میله‌ای مقایسه‌ای (سبک چرتکه)
+        // ۳. کارت نمودار میله‌ای (مخارج و درآمدها)
         val barChartCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = createGlassBg("#22FFFFFF", "#4DFFFFFF", dp(22).toFloat(), 2)
@@ -1030,7 +989,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
         })
         totalInfoCol.addView(TextView(this).apply {
-            text = if (showExpenseInBarChart) "مجموع مخارج دانشجویی" else "مجموع ورودی و درآمد دانشجویی"
+            text = if (showExpenseInBarChart) "مجموع مخارج" else "مجموع درآمدها"
             textSize = 12f
             setTextColor(Color.parseColor("#94A3B8"))
         })
@@ -1058,7 +1017,7 @@ class MainActivity : Activity() {
         }
 
         val incomeToggleBtn = TextView(this).apply {
-            text = "ورودی‌ها"
+            text = "درآمدها"
             textSize = 12f
             setTypeface(null, Typeface.BOLD)
             setPadding(dp(12), dp(6), dp(12), dp(6))
@@ -1095,11 +1054,10 @@ class MainActivity : Activity() {
         barChartCard.addView(barChartView)
         pageContentContainer.addView(barChartCard)
 
-        // ۴. نمودار دایره‌ای/قوسی سهم هزینه‌ها
+        // ۴. نمودار دایره‌ای هزینه‌ها (بدون نوشته اضافی کنار آن)
         pageContentContainer.addView(
             buildGlassArchChartCard(
-                badgeActiveText = "نمودار دایره‌ای هزینه‌ها",
-                badgeInactiveText = "۵ بخش دانشجویی",
+                badgeTitleText = "نمودار دایره‌ای هزینه‌ها",
                 borderHex = "#66FF5E8E",
                 categories = EXPENSE_CATEGORIES,
                 sumsMap = expenseSums,
@@ -1109,24 +1067,22 @@ class MainActivity : Activity() {
             )
         )
 
-        // ۵. نمودار دایره‌ای/قوسی منابع درآمد دانشجویی
+        // ۵. نمودار دایره‌ای درآمدها (بدون نوشته اضافی کنار آن)
         pageContentContainer.addView(
             buildGlassArchChartCard(
-                badgeActiveText = "نمودار دایره‌ای درآمدها",
-                badgeInactiveText = "منابع ورودی",
+                badgeTitleText = "نمودار دایره‌ای درآمدها",
                 borderHex = "#6634D399",
                 categories = INCOME_CATEGORIES,
                 sumsMap = incomeSums,
                 totalAmount = totalDeposit,
                 colorsHex = CHART_COLORS_INCOME,
-                emptyHint = "هنوز ورودی ثبت نشده است."
+                emptyHint = "هنوز درآمدی ثبت نشده است."
             )
         )
     }
 
     private fun buildGlassArchChartCard(
-        badgeActiveText: String,
-        badgeInactiveText: String,
+        badgeTitleText: String,
         borderHex: String,
         categories: List<String>,
         sumsMap: Map<String, Long>,
@@ -1142,10 +1098,13 @@ class MainActivity : Activity() {
             layoutParams = createCardLayoutParams(bottomMarginDp = 20)
         }
 
-        val headerPillBox = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = createGlassBg("#1AFFFFFF", "#4DFFFFFF", dp(12).toFloat(), 2)
-            setPadding(dp(3), dp(3), dp(3), dp(3))
+        val headerBadge = TextView(this).apply {
+            text = badgeTitleText
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            setPadding(dp(18), dp(7), dp(18), dp(7))
+            background = createGlassBg("#4D38BDF8", "#9938BDF8", dp(12).toFloat(), 2)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1153,24 +1112,7 @@ class MainActivity : Activity() {
                 setMargins(0, 0, 0, dp(12))
             }
         }
-
-        headerPillBox.addView(TextView(this).apply {
-            text = badgeActiveText
-            textSize = 12.5f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.WHITE)
-            setPadding(dp(14), dp(6), dp(14), dp(6))
-            background = createGlassBg("#4D38BDF8", "#9938BDF8", dp(9).toFloat(), 2)
-        })
-
-        headerPillBox.addView(TextView(this).apply {
-            text = badgeInactiveText
-            textSize = 12f
-            setTextColor(Color.parseColor("#94A3B8"))
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-        })
-
-        card.addView(headerPillBox)
+        card.addView(headerBadge)
 
         val slices = categories.mapIndexed { idx, cat ->
             ArchSlice(
@@ -1239,12 +1181,12 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // تب ۲: بودجه‌بندی دسته‌ای (هشدار ۸۰٪ زرد و ۱۰۰٪ قرمز) + ریزِ مخارج و تگ‌ها
+    // تب ۲: سقف بودجه (سقف بودجه فقط برای تفریح و سرگرمی)
     // =========================================================================
     private fun renderBudgetingAndCategoriesPage() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val arr = JSONArray(prefs.getString(KEY_TRANSACTIONS, "[]"))
-        val capsObj = JSONObject(prefs.getString(KEY_BUDGET_CAPS, "{}"))
+        val entertainmentCap = prefs.getLong(KEY_ENTERTAINMENT_CAP, DEFAULT_ENTERTAINMENT_CAP).coerceAtLeast(1L)
 
         val categorySums = mutableMapOf<String, Long>()
         val categoryItems = mutableMapOf<String, MutableList<String>>()
@@ -1269,29 +1211,100 @@ class MainActivity : Activity() {
             }
         }
 
+        // ۱. کارت ویژه سقف بودجه فقط برای «تفریح و سرگرمی»
+        val funSpent = categorySums[ENTERTAINMENT_CATEGORY] ?: 0L
+        val usagePct = ((funSpent * 100f) / entertainmentCap).toInt()
+
+        val statusColorHex = when {
+            usagePct >= 100 -> "#EF4444"
+            usagePct >= 80 -> "#F59E0B"
+            else -> "#10B981"
+        }
+
+        val statusLabel = when {
+            usagePct >= 100 -> "🚨 عبور از سقف بودجه تفریح ($usagePct٪)"
+            usagePct >= 80 -> "⚠️ هشدار نزدیک شدن به سقف تفریح ($usagePct٪)"
+            else -> "✅ مصرف تفریح در محدوده مجاز ($usagePct٪ از سقف)"
+        }
+
+        val funBudgetCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = createGlassBg("#28FFFFFF", addAlphaToHex(statusColorHex, "99"), dp(22).toFloat(), 3)
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            layoutParams = createCardLayoutParams(bottomMarginDp = 22)
+        }
+
+        val funTopRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        funTopRow.addView(TextView(this).apply {
+            text = "🎯 سقف بودجه تفریح"
+            textSize = 16.5f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+
+        val editCapBtn = TextView(this).apply {
+            text = "✏️ تغییر سقف: ${formatNumber(entertainmentCap)}"
+            textSize = 12f
+            setTextColor(Color.parseColor("#38BDF8"))
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+            background = createGlassBg("#2638BDF8", "#6638BDF8", dp(10).toFloat(), 1)
+            setOnClickListener {
+                showEditEntertainmentCapDialog(entertainmentCap)
+            }
+        }
+        funTopRow.addView(editCapBtn)
+        funBudgetCard.addView(funTopRow)
+
+        funBudgetCard.addView(TextView(this).apply {
+            text = "هزینه تفریح شما: ${formatNumber(funSpent)}  |  $statusLabel"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor(statusColorHex))
+            setPadding(0, dp(10), 0, dp(8))
+        })
+
+        val barTrack = FrameLayout(this).apply {
+            background = createGlassBg("#26FFFFFF", "#33FFFFFF", dp(8).toFloat(), 1)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(12))
+        }
+        val fillRatio = (usagePct / 100f).coerceIn(0.03f, 1f)
+        val barFill = View(this).apply {
+            background = createGlassBg(statusColorHex, statusColorHex, dp(8).toFloat(), 1)
+            layoutParams = FrameLayout.LayoutParams(
+                (resources.displayMetrics.widthPixels * 0.78f * fillRatio).toInt(),
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        barTrack.addView(barFill)
+        funBudgetCard.addView(barTrack)
+
+        val funItems = categoryItems[ENTERTAINMENT_CATEGORY] ?: emptyList()
+        funBudgetCard.addView(TextView(this).apply {
+            text = if (funItems.isEmpty()) "\nموردی در بخش تفریح ثبت نشده است." else "\n" + funItems.joinToString("\n")
+            textSize = 13f
+            setTextColor(Color.parseColor("#E2E8F0"))
+            setLineSpacing(7f, 1f)
+        })
+
+        pageContentContainer.addView(funBudgetCard)
+
+        // ۲. سایر دسته‌ها (فقط نمایش مخارج بدون سقف بودجه)
         EXPENSE_CATEGORIES.forEachIndexed { idx, cat ->
+            if (cat == ENTERTAINMENT_CATEGORY) return@forEachIndexed
+
             val spent = categorySums[cat] ?: 0L
-            val cap = capsObj.optLong(cat, DEFAULT_BUDGET_CAPS[cat] ?: 1500000L).coerceAtLeast(1L)
-            val usagePct = ((spent * 100f) / cap).toInt()
-
-            // تعیین رنگ هشدار بودجه: زیر ۸۰٪ سبز، بین ۸۰ تا ۹۹٪ زرد (هشدار)، بالای ۱۰۰٪ قرمز
-            val statusColorHex = when {
-                usagePct >= 100 -> "#EF4444" // قرمز: عبور از سقف بودجه
-                usagePct >= 80 -> "#F59E0B"  // زرد: هشدار ۸۰ درصدی
-                else -> "#10B981"            // سبز: وضعیت امن
-            }
-
-            val statusLabel = when {
-                usagePct >= 100 -> "🚨 عبور از سقف بودجه ($usagePct٪)"
-                usagePct >= 80 -> "⚠️ هشدار نزدیک شدن به سقف ($usagePct٪)"
-                else -> "✅ مصرف نرمال ($usagePct٪ از سقف)"
-            }
+            val accentHex = CHART_COLORS_EXPENSE[idx % CHART_COLORS_EXPENSE.size]
 
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                background = createGlassBg("#22FFFFFF", addAlphaToHex(statusColorHex, "88"), dp(20).toFloat(), 3)
+                background = createGlassBg("#22FFFFFF", addAlphaToHex(accentHex, "66"), dp(20).toFloat(), 2)
                 setPadding(dp(18), dp(16), dp(18), dp(16))
-                layoutParams = createCardLayoutParams(bottomMarginDp = 18)
+                layoutParams = createCardLayoutParams(bottomMarginDp = 16)
             }
 
             val topRow = LinearLayout(this).apply {
@@ -1301,65 +1314,28 @@ class MainActivity : Activity() {
 
             topRow.addView(TextView(this).apply {
                 text = cat
-                textSize = 16f
+                textSize = 15.5f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(Color.WHITE)
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             })
 
-            val editCapBtn = TextView(this).apply {
-                text = "✏️ سقف: ${formatNumber(cap)}"
-                textSize = 12f
-                setTextColor(Color.parseColor("#38BDF8"))
-                setPadding(dp(10), dp(4), dp(10), dp(4))
-                background = createGlassBg("#2638BDF8", "#6638BDF8", dp(10).toFloat(), 1)
-                setOnClickListener {
-                    showEditBudgetCapDialog(cat, cap)
-                }
-            }
-            topRow.addView(editCapBtn)
+            topRow.addView(TextView(this).apply {
+                text = formatNumber(spent)
+                textSize = 14.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor(accentHex))
+            })
+
             card.addView(topRow)
 
-            card.addView(TextView(this).apply {
-                text = "خرج‌شده: ${formatNumber(spent)}  |  $statusLabel"
-                textSize = 12.5f
-                setTypeface(null, Typeface.BOLD)
-                setTextColor(Color.parseColor(statusColorHex))
-                setPadding(0, dp(8), 0, dp(8))
-            })
-
-            // نوار پیشرفت بودجه
-            val barTrack = FrameLayout(this).apply {
-                background = createGlassBg("#26FFFFFF", "#33FFFFFF", dp(8).toFloat(), 1)
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(12))
-            }
-            val fillRatio = (usagePct / 100f).coerceIn(0.03f, 1f)
-            val barFill = View(this).apply {
-                background = createGlassBg(statusColorHex, statusColorHex, dp(8).toFloat(), 1)
-                layoutParams = FrameLayout.LayoutParams(
-                    (resources.displayMetrics.widthPixels * 0.78f * fillRatio).toInt(),
-                    LinearLayout.LayoutParams.MATCH_PARENT
-                )
-            }
-            barTrack.addView(barFill)
-            card.addView(barTrack)
-
-            // زیرمجموعه‌های پیشنهادی این دسته
-            val subCats = EXPENSE_SUBCATEGORIES[cat]?.joinToString(" ، ") ?: ""
-            card.addView(TextView(this).apply {
-                text = "زیرمجموعه‌ها: $subCats"
-                textSize = 11.5f
-                setTextColor(Color.parseColor("#94A3B8"))
-                setPadding(0, dp(8), 0, dp(8))
-            })
-
             val items = categoryItems[cat] ?: emptyList()
-            val itemsText = if (items.isEmpty()) "موردی در این دوره ثبت نشده است." else items.joinToString("\n")
+            val itemsText = if (items.isEmpty()) "موردی ثبت نشده است." else items.joinToString("\n")
 
             card.addView(TextView(this).apply {
-                text = itemsText
+                text = "\n$itemsText"
                 textSize = 13f
-                setTextColor(Color.parseColor("#E2E8F0"))
+                setTextColor(Color.parseColor("#CBD5E1"))
                 setLineSpacing(7f, 1f)
             })
 
@@ -1367,21 +1343,19 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showEditBudgetCapDialog(category: String, currentCap: Long) {
+    private fun showEditEntertainmentCapDialog(currentCap: Long) {
         val input = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(currentCap.toString())
             setPadding(dp(16), dp(14), dp(16), dp(14))
         }
         AlertDialog.Builder(this)
-            .setTitle("تعیین سقف بودجه «$category»")
+            .setTitle("تعیین سقف بودجه تفریح")
             .setView(input)
             .setPositiveButton("ذخیره") { _, _ ->
                 val newCap = SmsParser.normalizeDigits(input.text.toString()).toLongOrNull() ?: currentCap
                 val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                val capsObj = JSONObject(prefs.getString(KEY_BUDGET_CAPS, "{}"))
-                capsObj.put(category, newCap)
-                prefs.edit().putString(KEY_BUDGET_CAPS, capsObj.toString()).apply()
+                prefs.edit().putLong(KEY_ENTERTAINMENT_CAP, newCap).apply()
                 refreshUI()
             }
             .setNegativeButton("انصراف", null)
@@ -1389,12 +1363,11 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // تب ۳: ماشین‌حساب دُنگ خوابگاه/دوستان + دفترچه طلب و بدهی دوستانه
+    // تب ۳: دنگ‌ها
     // =========================================================================
     private fun renderSplitBillAndDebtsPage() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        // ۱. کارت ماشین‌حساب دُنگ (ثبت فقط سهم خود دانشجو در هزینه‌ها)
         val dongCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = createGlassBg("#26FFFFFF", "#6622D3EE", dp(20).toFloat(), 3)
@@ -1403,17 +1376,10 @@ class MainActivity : Activity() {
         }
 
         dongCard.addView(TextView(this).apply {
-            text = "🍕 ماشین‌حساب دُنگ دانشجویی (ثبت فقط سهم شما)"
+            text = "🍕 ماشین‌حساب دُنگ (ثبت فقط سهم شما)"
             textSize = 15.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#22D3EE"))
-        })
-
-        dongCard.addView(TextView(this).apply {
-            text = "وقتی کل فاکتور غذا یا اسنپ را شما حساب می‌کنید، این بخش فقط «سهم خودتان» را در مخارج سبک زندگی ثبت می‌کند تا گزارشتان به هم نریزد."
-            textSize = 12.5f
-            setTextColor(Color.parseColor("#CBD5E1"))
-            setPadding(0, dp(6), 0, dp(12))
         })
 
         val billInput = EditText(this).apply {
@@ -1424,7 +1390,7 @@ class MainActivity : Activity() {
             textSize = 13.5f
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = createGlassBg("#1AFFFFFF", "#4DFFFFFF", dp(12).toFloat(), 1)
-            layoutParams = createCardLayoutParams(bottomMarginDp = 10)
+            layoutParams = createCardLayoutParams(bottomMarginDp = 10).apply { topMargin = dp(10) }
         }
         dongCard.addView(billInput)
 
@@ -1452,7 +1418,7 @@ class MainActivity : Activity() {
         dongCard.addView(titleAndFriendsInput)
 
         val calcDongBtn = Button(this).apply {
-            text = "➗ محاسبه دُنگ، ثبت سهم من در خرج و ثبت طلب از دوستان"
+            text = "➗ محاسبه دُنگ و ثبت سهم"
             setTextColor(Color.WHITE)
             textSize = 13f
             setTypeface(null, Typeface.BOLD)
@@ -1466,24 +1432,22 @@ class MainActivity : Activity() {
                 }
                 val myShare = totalBill / people
                 val friendsShare = totalBill - myShare
-                val desc = titleAndFriendsInput.text.toString().trim().ifEmpty { "خرج مشترک دانشجویی" }
+                val desc = titleAndFriendsInput.text.toString().trim().ifEmpty { "خرج مشترک" }
 
-                // ثبت فقط سهم خود دانشجو در مخارج
-                addManualTransaction("WITHDRAW", myShare, "سهم من از $desc", "تفریح و سرگرمی", "#عادی")
+                addManualTransaction("WITHDRAW", myShare, "سهم من از $desc", ENTERTAINMENT_CATEGORY, "#عادی")
 
-                // ثبت بقیه مبلغ در دفترچه طلب از دوستان
                 val debtsArr = JSONArray(prefs.getString(KEY_DEBTS, "[]"))
                 debtsArr.put(JSONObject().apply {
                     put("id", System.currentTimeMillis())
                     put("person", desc)
                     put("amount", friendsShare)
-                    put("isReceivable", true) // طلبکارم
+                    put("isReceivable", true)
                 })
                 prefs.edit().putString(KEY_DEBTS, debtsArr.toString()).apply()
 
                 Toast.makeText(
                     this@MainActivity,
-                    "✅ سهم شما (${formatNumber(myShare)}) در مخارج و سهم دوستان (${formatNumber(friendsShare)}) در طلب‌ها ثبت شد!",
+                    "✅ سهم شما (${formatNumber(myShare)}) در مخارج و سهم دوستان (${formatNumber(friendsShare)}) در دنگ‌ها ثبت شد!",
                     Toast.LENGTH_LONG
                 ).show()
                 refreshUI()
@@ -1492,7 +1456,6 @@ class MainActivity : Activity() {
         dongCard.addView(calcDongBtn)
         pageContentContainer.addView(dongCard)
 
-        // ۲. دفترچه طلب و بدهی دوستانه
         val debtCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = createGlassBg("#22FFFFFF", "#66FBBF24", dp(20).toFloat(), 2)
@@ -1531,7 +1494,7 @@ class MainActivity : Activity() {
         val debtsArr = JSONArray(prefs.getString(KEY_DEBTS, "[]"))
         if (debtsArr.length() == 0) {
             debtCard.addView(TextView(this).apply {
-                text = "هیچ طلب یا بدهی باز با دوستان ثبت نشده است."
+                text = "هیچ طلب یا بدهی ثبت نشده است."
                 textSize = 13f
                 setTextColor(Color.parseColor("#94A3B8"))
             })
@@ -1599,7 +1562,7 @@ class MainActivity : Activity() {
         layout.addView(amountInput)
 
         AlertDialog.Builder(this)
-            .setTitle("ثبت طلب یا بدهی دوستانه")
+            .setTitle("ثبت طلب یا بدهی")
             .setView(layout)
             .setPositiveButton("طلبکارم (+)") { _, _ ->
                 saveDebtItem(personInput.text.toString(), amountInput.text.toString(), true)
@@ -1638,12 +1601,11 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // تب ۴: قلک هدف‌گذاری دانشجویی (Saving Goals) + لیست گردش حساب بانک
+    // تب ۴: قلک
     // =========================================================================
     private fun renderGoalsAndTurnoverPage() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        // ۱. کارت قلک اهداف دانشجویی
         val goalsCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = createGlassBg("#24FFFFFF", "#6634D399", dp(20).toFloat(), 3)
@@ -1658,7 +1620,7 @@ class MainActivity : Activity() {
         }
 
         goalHeader.addView(TextView(this).apply {
-            text = "🐷 قلک اهداف دانشجویی (Saving Goals)"
+            text = "🐷 قلک هدف‌گذاری"
             textSize = 15.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#34D399"))
@@ -1745,7 +1707,6 @@ class MainActivity : Activity() {
         }
         pageContentContainer.addView(goalsCard)
 
-        // ۲. لیست گردش حساب پیامکی
         pageContentContainer.addView(TextView(this).apply {
             text = "🔄 گردش حساب اخیر:"
             textSize = 15.5f
@@ -1762,7 +1723,7 @@ class MainActivity : Activity() {
                 setPadding(dp(20), dp(20), dp(20), dp(20))
             }
             emptyCard.addView(TextView(this).apply {
-                text = "هنوز تراکنشی در این دوره ثبت نشده است."
+                text = "هنوز تراکنشی ثبت نشده است."
                 textSize = 13.5f
                 setTextColor(Color.parseColor("#94A3B8"))
                 gravity = Gravity.CENTER
@@ -1774,6 +1735,7 @@ class MainActivity : Activity() {
                 val type = obj.getString("type")
                 val amount = obj.getLong("amount")
                 val date = obj.optString("date", "")
+                val bankName = obj.optString("bank", "بانک")
                 val title = obj.optString("title", "تراکنش")
                 val cat = obj.optString("category", "")
                 val tag = obj.optString("tag", "")
@@ -1799,7 +1761,7 @@ class MainActivity : Activity() {
                 })
 
                 txCard.addView(TextView(this).apply {
-                    text = "دسته: $cat  ${if (tag.isNotEmpty()) "| $tag" else ""}  |  $date"
+                    text = "$bankName | دسته: $cat ${if (tag.isNotEmpty()) "| $tag" else ""} | $date"
                     textSize = 12f
                     setTextColor(Color.parseColor("#CBD5E1"))
                     setPadding(0, dp(6), 0, 0)
@@ -1830,7 +1792,7 @@ class MainActivity : Activity() {
             .setPositiveButton("ایجاد هدف") { _, _ ->
                 val target = SmsParser.normalizeDigits(targetInput.text.toString()).toLongOrNull() ?: 0L
                 if (target > 0L) {
-                    val title = titleInput.text.toString().trim().ifEmpty { "هدف دانشجویی" }
+                    val title = titleInput.text.toString().trim().ifEmpty { "هدف جدید" }
                     val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     val arr = JSONArray(prefs.getString(KEY_GOALS, "[]"))
                     arr.put(JSONObject().apply {
@@ -1877,7 +1839,7 @@ class MainActivity : Activity() {
     }
 
     // =========================================================================
-    // تب ۵: ابزارهای تست پیامک (بدون تغییر موجودی واقعی) و ریست دوره
+    // تب ۵: تست پیامک بانک‌های مختلف
     // =========================================================================
     private fun renderToolsAndTestPage() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -1890,14 +1852,14 @@ class MainActivity : Activity() {
         }
 
         infoCard.addView(TextView(this).apply {
-            text = "🧪 بخش تست پیامک و مدیریت دوره"
+            text = "🧪 بخش تست پیامک (پشتیبانی از چند بانک)"
             textSize = 15.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#38BDF8"))
         })
 
         infoCard.addView(TextView(this).apply {
-            text = "\n• موجودی واقعی شما به صورت خودکار از آخرین پیامک بانک در گوشی خوانده می‌شود.\n• دکمه‌های تست زیر فقط پنجره سوال را به صورت آزمایشی نشان می‌دهند و هیچ مبلغی را از موجودی واقعی شما کم یا زیاد نمی‌کنند."
+            text = "\n• موجودی حساب بانکی شما از پیامک‌های واقعی بانک‌ها (ملی، ملت، صادرات، تجارت، سپه، پاسارگاد، بلوبانک، سامان، پارسیان، کشاورزی، مسکن، رسالت و...) خوانده می‌شود.\n• دکمه‌های زیر فقط برای تست نمایش پنجره هستند و موجودی حساب شما را تغییر نمی‌دهند."
             textSize = 13f
             setTextColor(Color.parseColor("#CBD5E1"))
             setLineSpacing(8f, 1f)
@@ -1905,7 +1867,7 @@ class MainActivity : Activity() {
         pageContentContainer.addView(infoCard)
 
         val testWithdrawBtn = Button(this).apply {
-            text = "🧪 تست پنجره پیامک برداشت (بدون کسر از موجودی)"
+            text = "🧪 تست پیامک برداشت (بدون کسر از موجودی)"
             setTextColor(Color.WHITE)
             textSize = 13.5f
             setTypeface(null, Typeface.BOLD)
@@ -1914,18 +1876,19 @@ class MainActivity : Activity() {
             layoutParams = createCardLayoutParams(bottomMarginDp = 16)
             setOnClickListener {
                 val sampleWithdrawSms = """
+                    بانک ملی
                     حساب ********
                     برداشت1,511,000
                     مانده712,744
                     05/08/21-10:50
                 """.trimIndent()
-                SmsParser.processBankSms(this@MainActivity, sampleWithdrawSms, isTest = true)
+                SmsParser.processBankSms(this@MainActivity, sampleWithdrawSms, "BankMelli", isTest = true)
             }
         }
         pageContentContainer.addView(testWithdrawBtn)
 
         val testDepositBtn = Button(this).apply {
-            text = "🧪 تست پنجره پیامک واریز (بدون تغییر موجودی)"
+            text = "🧪 تست پیامک واریز (بدون تغییر موجودی)"
             setTextColor(Color.WHITE)
             textSize = 13.5f
             setTypeface(null, Typeface.BOLD)
@@ -1934,18 +1897,19 @@ class MainActivity : Activity() {
             layoutParams = createCardLayoutParams(bottomMarginDp = 24)
             setOnClickListener {
                 val sampleDepositSms = """
-                    حساب ********
-                    واریز1,250,000
-                    مانده1,962,744
+                    بلوبانک
+                    واریز به حساب
+                    مبلغ: 1,250,000 ریال
+                    موجودی: 1,962,744 ریال
                     05/08/21-19:57
                 """.trimIndent()
-                SmsParser.processBankSms(this@MainActivity, sampleDepositSms, isTest = true)
+                SmsParser.processBankSms(this@MainActivity, sampleDepositSms, "BluBank", isTest = true)
             }
         }
         pageContentContainer.addView(testDepositBtn)
 
         val resetBtn = Button(this).apply {
-            text = "🔄 شروع دوره جدید (پاک کردن لیست خرج‌های دوره)"
+            text = "🗑️ پاک کردن لیست تراکنش‌های ثبت‌شده"
             setTextColor(Color.parseColor("#FCA5A5"))
             textSize = 13.5f
             setTypeface(null, Typeface.BOLD)
@@ -1954,14 +1918,13 @@ class MainActivity : Activity() {
             layoutParams = createCardLayoutParams(bottomMarginDp = 20)
             setOnClickListener {
                 AlertDialog.Builder(this@MainActivity)
-                    .setTitle("شروع دوره جدید")
-                    .setMessage("آیا مطمئن هستید که می‌خواهید لیست تراکنش‌های دوره فعلی را صفر کنید؟ (موجودی واقعی بانک، قلک‌ها و دفترچه دُنگ حفظ می‌شوند)")
-                    .setPositiveButton("بله، شروع شود") { _, _ ->
+                    .setTitle("پاک کردن تراکنش‌ها")
+                    .setMessage("آیا مطمئن هستید که می‌خواهید لیست تراکنش‌ها را پاک کنید؟ (موجودی حساب بانکی شما حفظ می‌شود)")
+                    .setPositiveButton("بله، پاک شود") { _, _ ->
                         prefs.edit()
                             .putString(KEY_TRANSACTIONS, "[]")
-                            .putLong(KEY_CYCLE_START, System.currentTimeMillis())
                             .apply()
-                        syncLatestBalanceFromSmsInbox(showToast = false)
+                        syncAllBanksFromSmsInbox(showToast = false)
                         refreshUI()
                     }
                     .setNegativeButton("انصراف", null)
@@ -2008,9 +1971,6 @@ class MainActivity : Activity() {
     }
 }
 
-// =========================================================================
-// ویوی نمودار میله‌ای نئونی شیشه‌ای
-// =========================================================================
 class GlassBarChartView(
     context: Context,
     private val values: List<Float>,
@@ -2071,9 +2031,6 @@ class GlassBarChartView(
     }
 }
 
-// =========================================================================
-// ویوی نمودار قوسی / نیم‌دایره نئونی شیشه‌ای
-// =========================================================================
 data class ArchSlice(val value: Float, val color: Int)
 
 class GlassArchChartView(
@@ -2125,111 +2082,216 @@ class GlassArchChartView(
     }
 }
 
-// =========================================================================
-// دریافت خودکار پیامک‌های واقعی بانک در پس‌زمینه
-// =========================================================================
 class SmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Telephony.Sms.Intents.SMS_RECEIVED_ACTION) {
             val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
             val fullText = StringBuilder()
+            var sender = ""
             for (msg in messages) {
                 fullText.append(msg.messageBody)
+                if (sender.isEmpty()) sender = msg.originatingAddress ?: ""
             }
-            SmsParser.processBankSms(context, fullText.toString(), isTest = false)
+            SmsParser.processBankSms(context, fullText.toString(), sender, isTest = false)
         }
     }
 }
 
+data class ParsedBankSms(
+    val bankKey: String,
+    val type: String?, // "DEPOSIT" or "WITHDRAW"
+    val amount: Long?,
+    val balance: Long?,
+    val dateStr: String
+)
+
 object SmsParser {
-    fun processBankSms(context: Context, rawText: String, isTest: Boolean = false) {
+
+    // پشتیبانی از الگوهای پیامک انواع بانک‌های ایران (ملی، ملت، صادرات، تجارت، سپه، پاسارگاد، بلوبانک، سامان، پارسیان، کشاورزی، مسکن، رسالت، رفاه و...)
+    fun parseBankSmsDetails(rawText: String, senderAddress: String = ""): ParsedBankSms? {
         val text = normalizeDigits(rawText)
 
-        val depositMatch = Regex("""واریز\s*:?\s*([\d,]+)""").find(text)
-        val withdrawMatch = Regex("""برداشت\s*:?\s*([\d,]+)""").find(text)
-        val balanceMatch = Regex("""مانده\s*:?\s*([\d,]+)""").find(text)
-        val dateMatch = Regex("""(\d{2}/\d{2}/\d{2}-\d{2}:\d{2})""").find(text)
+        val hasBankContext = text.contains("مانده") ||
+                text.contains("موجودی") ||
+                text.contains("واریز") ||
+                text.contains("برداشت") ||
+                text.contains("حساب") ||
+                text.contains("بانک") ||
+                text.contains("بلو")
 
-        if (depositMatch == null && withdrawMatch == null) return
+        if (!hasBankContext) return null
 
+        val balanceMatch = Regex("""(?:مانده|موجودی|قابل برداشت)\s*:?\s*([\d,]+)""").find(text)
+        val balance = balanceMatch?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull()
+
+        val depositDirect = Regex("""(?:واریز|افزایش|بستانکار|واریز به حساب)\s*(?:مبلغ)?\s*:?\s*([\d,]+)""").find(text)
+        val withdrawDirect = Regex("""(?:برداشت|کاهش|بدهکار|خرید|پرداخت|برداشت از حساب)\s*(?:مبلغ)?\s*:?\s*([\d,]+)""").find(text)
+        val plusSignAmount = Regex("""\+\s*([\d,]{4,})""").find(text)
+        val minusSignAmount = Regex("""-\s*([\d,]{4,})""").find(text)
+        val genericAmount = Regex("""مبلغ\s*:?\s*([\d,]+)""").find(text)
+
+        var txType: String? = null
+        var amount: Long? = null
+
+        when {
+            depositDirect != null -> {
+                txType = "DEPOSIT"
+                amount = depositDirect.groupValues[1].replace(",", "").toLongOrNull()
+            }
+            withdrawDirect != null -> {
+                txType = "WITHDRAW"
+                amount = withdrawDirect.groupValues[1].replace(",", "").toLongOrNull()
+            }
+            text.contains("واریز") && genericAmount != null -> {
+                txType = "DEPOSIT"
+                amount = genericAmount.groupValues[1].replace(",", "").toLongOrNull()
+            }
+            (text.contains("برداشت") || text.contains("خرید")) && genericAmount != null -> {
+                txType = "WITHDRAW"
+                amount = genericAmount.groupValues[1].replace(",", "").toLongOrNull()
+            }
+            plusSignAmount != null -> {
+                txType = "DEPOSIT"
+                amount = plusSignAmount.groupValues[1].replace(",", "").toLongOrNull()
+            }
+            minusSignAmount != null -> {
+                txType = "WITHDRAW"
+                amount = minusSignAmount.groupValues[1].replace(",", "").toLongOrNull()
+            }
+        }
+
+        if (balance == null && amount == null) return null
+
+        val bankName = detectBankName(text, senderAddress)
+        val dateMatch = Regex("""(\d{2,4}/\d{2}/\d{2}(?:-\d{2}:\d{2})?|\d{2}:\d{2})""").find(text)
         val dateStr = dateMatch?.groupValues?.get(1) ?: "امروز"
 
-        // اگر حالت تست بود، هیچ تغییری در موجودی واقعی یا لیست واقعی ایجاد نشود
+        return ParsedBankSms(
+            bankKey = bankName,
+            type = txType,
+            amount = amount,
+            balance = balance,
+            dateStr = dateStr
+        )
+    }
+
+    private fun detectBankName(text: String, sender: String): String {
+        val s = sender.lowercase(Locale.ROOT)
+        return when {
+            text.contains("ملی") || s.contains("melli") || s.contains("sadad") -> "بانک ملی"
+            text.contains("ملت") || s.contains("mellat") -> "بانک ملت"
+            text.contains("بلو") || s.contains("blu") -> "بلوبانک"
+            text.contains("سامان") || s.contains("saman") -> "بانک سامان"
+            text.contains("صادرات") || s.contains("saderat") || s.contains("bsi") -> "بانک صادرات"
+            text.contains("تجارت") || s.contains("tejarat") -> "بانک تجارت"
+            text.contains("سپه") || s.contains("sepah") -> "بانک سپه"
+            text.contains("پاسارگاد") || s.contains("pasargad") -> "بانک پاسارگاد"
+            text.contains("پارسیان") || s.contains("parsian") -> "بانک پارسیان"
+            text.contains("کشاورزی") || s.contains("keshavarzi") || s.contains("bki") -> "بانک کشاورزی"
+            text.contains("مسکن") || s.contains("maskan") -> "بانک مسکن"
+            text.contains("رسالت") || s.contains("resalat") -> "بانک رسالت"
+            text.contains("رفاه") || s.contains("refah") -> "بانک رفاه"
+            text.contains("آینده") || s.contains("ayandeh") -> "بانک آینده"
+            text.contains("شهر") || s.contains("shahr") -> "بانک شهر"
+            else -> {
+                val accMatch = Regex("""(?:حساب|کارت)\s*:?\s*([\d*]{4,})""").find(text)
+                if (accMatch != null) {
+                    "حساب ${accMatch.groupValues[1].takeLast(4)}"
+                } else if (sender.isNotBlank()) {
+                    "بانک ($sender)"
+                } else {
+                    "حساب بانکی اصلی"
+                }
+            }
+        }
+    }
+
+    fun processBankSms(
+        context: Context,
+        rawText: String,
+        senderAddress: String = "",
+        isTest: Boolean = false
+    ) {
+        val parsed = parseBankSmsDetails(rawText, senderAddress) ?: return
+
         if (isTest) {
-            if (depositMatch != null) {
-                val amount = depositMatch.groupValues[1].replace(",", "").toLongOrNull() ?: 0L
+            val amt = parsed.amount ?: 0L
+            if (parsed.type == "DEPOSIT") {
                 sendNotification(
                     context,
-                    "[تست] واریز بانکی",
-                    "تست پیامک واریز به مبلغ ${depositMatch.groupValues[1]} (بدون تغییر در موجودی واقعی)"
+                    "[تست] واریز (${parsed.bankKey})",
+                    "تست پیامک واریز به مبلغ $amt (بدون تغییر در موجودی)"
                 )
-                MainActivity.onTestSmsReceived?.invoke("DEPOSIT", amount, dateStr)
-            } else if (withdrawMatch != null) {
-                val amount = withdrawMatch.groupValues[1].replace(",", "").toLongOrNull() ?: 0L
+                MainActivity.onTestSmsReceived?.invoke("DEPOSIT", amt, parsed.bankKey, parsed.dateStr)
+            } else if (parsed.type == "WITHDRAW") {
                 sendNotification(
                     context,
-                    "[تست] برداشت بانکی: چه چیزی خریدید؟",
-                    "تست پیامک برداشت به مبلغ ${withdrawMatch.groupValues[1]} (بدون کسر از موجودی واقعی)"
+                    "[تست] برداشت (${parsed.bankKey})",
+                    "تست پیامک برداشت به مبلغ $amt (بدون کسر از موجودی)"
                 )
-                MainActivity.onTestSmsReceived?.invoke("WITHDRAW", amount, dateStr)
+                MainActivity.onTestSmsReceived?.invoke("WITHDRAW", amt, parsed.bankKey, parsed.dateStr)
             }
             return
         }
 
         val prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
-        val arr = JSONArray(prefs.getString(MainActivity.KEY_TRANSACTIONS, "[]"))
-        val balance = balanceMatch?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull()
-
         val editor = prefs.edit()
-        if (balance != null) {
-            editor.putLong(MainActivity.KEY_BALANCE, balance)
-            editor.putString(MainActivity.KEY_BALANCE_DATE, dateStr)
+
+        if (parsed.balance != null) {
+            val banksJson = JSONObject(prefs.getString(MainActivity.KEY_BANK_BALANCES, "{}"))
+            banksJson.put(parsed.bankKey, JSONObject().apply {
+                put("bankName", parsed.bankKey)
+                put("balance", parsed.balance)
+                put("date", parsed.dateStr)
+            })
+            editor.putString(MainActivity.KEY_BANK_BALANCES, banksJson.toString())
         }
 
-        if (depositMatch != null) {
-            val amount = depositMatch.groupValues[1].replace(",", "").toLongOrNull() ?: 0L
-            if (amount > 0) {
-                val obj = JSONObject().apply {
-                    put("id", System.currentTimeMillis())
-                    put("type", "DEPOSIT")
-                    put("amount", amount)
-                    put("date", dateStr)
-                    put("balance", balance ?: -1L)
-                    put("title", "واریز بانکی")
-                    put("category", MainActivity.INCOME_CATEGORIES[0])
-                    put("tag", "#ورودی")
-                    put("pending", true)
-                }
-                arr.put(obj)
-                editor.putString(MainActivity.KEY_TRANSACTIONS, arr.toString()).apply()
-                sendNotification(
-                    context,
-                    "واریز بانکی: منبع ورودی چیست؟",
-                    "مبلغ ${depositMatch.groupValues[1]} واریز شد. ضربه بزنید و دسته ورودی را مشخص کنید."
-                )
+        val arr = JSONArray(prefs.getString(MainActivity.KEY_TRANSACTIONS, "[]"))
+        val amount = parsed.amount ?: 0L
+
+        if (parsed.type == "DEPOSIT" && amount > 0) {
+            val obj = JSONObject().apply {
+                put("id", System.currentTimeMillis())
+                put("type", "DEPOSIT")
+                put("amount", amount)
+                put("bank", parsed.bankKey)
+                put("date", parsed.dateStr)
+                put("balance", parsed.balance ?: -1L)
+                put("title", "درآمد جدید")
+                put("category", MainActivity.INCOME_CATEGORIES[0])
+                put("tag", "#درآمد")
+                put("pending", true)
             }
-        } else if (withdrawMatch != null) {
-            val amount = withdrawMatch.groupValues[1].replace(",", "").toLongOrNull() ?: 0L
-            if (amount > 0) {
-                val obj = JSONObject().apply {
-                    put("id", System.currentTimeMillis())
-                    put("type", "WITHDRAW")
-                    put("amount", amount)
-                    put("date", dateStr)
-                    put("balance", balance ?: -1L)
-                    put("title", "ثبت نشده")
-                    put("category", MainActivity.EXPENSE_CATEGORIES[0])
-                    put("tag", "#ضروری")
-                    put("pending", true)
-                }
-                arr.put(obj)
-                editor.putString(MainActivity.KEY_TRANSACTIONS, arr.toString()).apply()
-                sendNotification(
-                    context,
-                    "برداشت بانکی: چه چیزی خریدید؟",
-                    "مبلغ ${withdrawMatch.groupValues[1]} برداشت شد. ضربه بزنید و دسته و تگ را مشخص کنید."
-                )
+            arr.put(obj)
+            editor.putString(MainActivity.KEY_TRANSACTIONS, arr.toString()).apply()
+            sendNotification(
+                context,
+                "واریز (${parsed.bankKey}): منبع درآمد چیست؟",
+                "مبلغ $amount واریز شد. ضربه بزنید و دسته درآمد را مشخص کنید."
+            )
+        } else if (parsed.type == "WITHDRAW" && amount > 0) {
+            val obj = JSONObject().apply {
+                put("id", System.currentTimeMillis())
+                put("type", "WITHDRAW")
+                put("amount", amount)
+                put("bank", parsed.bankKey)
+                put("date", parsed.dateStr)
+                put("balance", parsed.balance ?: -1L)
+                put("title", "ثبت نشده")
+                put("category", MainActivity.EXPENSE_CATEGORIES[0])
+                put("tag", "#ضروری")
+                put("pending", true)
             }
+            arr.put(obj)
+            editor.putString(MainActivity.KEY_TRANSACTIONS, arr.toString()).apply()
+            sendNotification(
+                context,
+                "برداشت (${parsed.bankKey}): چه چیزی خریدید؟",
+                "مبلغ $amount برداشت شد. ضربه بزنید و دسته را مشخص کنید."
+            )
+        } else {
+            editor.apply()
         }
 
         MainActivity.onSmsReceivedUIUpdate?.invoke()
@@ -2243,15 +2305,15 @@ object SmsParser {
             res = res.replace(persian[i], '0' + i)
             res = res.replace(arabic[i], '0' + i)
         }
-        return res.replace('٬', ',')
+        return res.replace('٬', ',').replace('ي', 'ی').replace('ك', 'ک')
     }
 
     private fun sendNotification(context: Context, title: String, message: String) {
-        val channelId = "student_pfm_channel"
+        val channelId = "poolaye_man_channel"
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(channelId, "اعلان تراکنش‌های دانشجویی", NotificationManager.IMPORTANCE_HIGH)
+            val channel = NotificationChannel(channelId, "اعلان تراکنش‌های پولای من", NotificationManager.IMPORTANCE_HIGH)
             nm.createNotificationChannel(channel)
         }
 
