@@ -5,6 +5,9 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,16 +21,40 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
+      - name: Fix mobile file paths and clean syntax
+        run: |
+          mkdir -p app/src/main/java/com/example/banktracker
+
+          # پیدا کردن و انتقال فایل‌ها به مسیر دقیق در صورت اشتباه تایپی در نام پوشه‌ها
+          MANIFEST_FILE=$(find . -iname "*AndroidManifest*" -type f | head -n 1)
+          if [ -n "$MANIFEST_FILE" ] && [ "$MANIFEST_FILE" != "./app/src/main/AndroidManifest.xml" ]; then
+            cp "$MANIFEST_FILE" app/src/main/AndroidManifest.xml
+          fi
+
+          KT_FILE=$(find . -iname "*MainActivity*" -type f | head -n 1)
+          if [ -n "$KT_FILE" ] && [ "$KT_FILE" != "./app/src/main/java/com/example/banktracker/MainActivity.kt" ]; then
+            cp "$KT_FILE" app/src/main/java/com/example/banktracker/MainActivity.kt
+          fi
+
+          # حذف علامت‌های اضافی احتمالی و حذف تکرار خط package
+          sed -i '/^```/d' app/src/main/java/com/example/banktracker/MainActivity.kt || true
+          sed -i '/^```/d' app/src/main/AndroidManifest.xml || true
+          awk '!/^package / || !seenPackage++' app/src/main/java/com/example/banktracker/MainActivity.kt > tmp.kt && mv tmp.kt app/src/main/java/com/example/banktracker/MainActivity.kt
+
+      - name: Accept Android SDK Licenses
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+      - name: Setup Gradle without broken cache
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.6'
+          cache-disabled: true
 
       - name: Build Debug APK
-        run: gradle assembleDebug
+        run: gradle assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: BankTracker-APK
+          name: PoolayeMan-APK
           path: app/build/outputs/apk/debug/app-debug.apk
